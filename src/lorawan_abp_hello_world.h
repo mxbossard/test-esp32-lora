@@ -39,27 +39,6 @@
 #include <lmic.h>
 #include <hal/hal.h>
 #include <SPI.h>
-#include <Wire.h>
-
-#include <Adafruit_BME280.h>
-#include <CayenneLPP.h>
-
-#define LPP_BME280_CHANNEL 1
-#define PROBE_MINIMUM_SIGNIFICANT_VALUES 3
-#define PROBE_MAXIMUM_PROBING_ITERATION 5
-#define ADC_CORRECTION_RATIO ( 1 )
-
-#define PROBE_SLEEP_DELAY_IN_SEC 300
-
-#define D39 39 // BME 280 SDA
-#define D34 34 // BME 280 SCL
-
-// BME280 sensor on I2C
-Adafruit_BME280 bme; // use I2C interface
-Adafruit_Sensor *bme_temp = bme.getTemperatureSensor();
-Adafruit_Sensor *bme_pressure = bme.getPressureSensor();
-Adafruit_Sensor *bme_humidity = bme.getHumiditySensor();
-
 
 //
 // For normal use, we require that you edit the sketch to replace FILLMEIN
@@ -67,6 +46,7 @@ Adafruit_Sensor *bme_humidity = bme.getHumiditySensor();
 // we want to be able to compile these scripts. The regression tests define
 // COMPILE_REGRESSION_TEST, and in that case we define FILLMEIN to a non-
 // working but innocuous value.
+//
 #ifdef COMPILE_REGRESSION_TEST
 # define FILLMEIN 0
 #else
@@ -75,7 +55,20 @@ Adafruit_Sensor *bme_humidity = bme.getHumiditySensor();
 #endif
 
 // Lorawan credentials in another file
-#include "privateCredentials.h"
+#include "abpPrivateCredentials.h"
+
+// LoRaWAN NwkSKey, network session key
+// This should be in big-endian (aka msb).
+static const PROGMEM u1_t NWKSKEY[16] = LORAWAN_NWKSKEY;
+
+// LoRaWAN AppSKey, application session key
+// This should also be in big-endian (aka msb).
+static const u1_t PROGMEM APPSKEY[16] = LORAWAN_APPSKEY;
+
+// LoRaWAN end-device address (DevAddr)
+// See http://thethingsnetwork.org/wiki/AddressSpace
+// The library converts the address to network byte order as needed, so this should be in big-endian (aka msb) too.
+static const u4_t DEVADDR = LORAWAN_DEVADDR ; // <-- Change this address for every node!
 
 // These callbacks are only used in over-the-air activation, so they are
 // left empty here (we cannot leave them out completely unless
@@ -84,13 +77,13 @@ Adafruit_Sensor *bme_humidity = bme.getHumiditySensor();
 void os_getArtEui (u1_t* buf) { }
 void os_getDevEui (u1_t* buf) { }
 
+static uint8_t mydata[] = "Hello, world!";
 static osjob_t sendjob;
 
 // Schedule TX every this many seconds (might become longer due to duty
 // cycle limitations).
 const unsigned TX_INTERVAL = 60;
 
-CayenneLPP lpp(128);
 
 // project-specific definitions in lmic_project_config.h file
 // #define DISABLE_PING
@@ -109,227 +102,16 @@ const lmic_pinmap lmic_pins = {
 };
 
 
-/**
- * Return [temperature, humidty, pressure]
- */ 
-float * probeBme280() {
-    //Serial.println(F("Probing BME280 ..."));
-    bool error = false;
-    float temp = 0;
-    float humidity = 0;
-    float pressure = 0;
-
-    if (bme.begin(0x76, & Wire)) {
-        sensors_event_t temp_event, pressure_event, humidity_event;
-        bme_temp->getEvent(&temp_event);
-        bme_pressure->getEvent(&pressure_event);
-        bme_humidity->getEvent(&humidity_event);
-
-        temp = temp_event.temperature;
-        humidity = humidity_event.relative_humidity;
-        pressure = pressure_event.pressure;
-    } else {
-        Serial.println(F("Could not find a valid BME280 sensor, check wiring!"));
-        error = true;
-    }
-
-    static float array[4];
-    array[0] = temp;
-    array[1] = humidity;
-    array[2] = pressure;
-    array[3] = error;
-    return array;
-}
-
-int sortFloatAsc(const void *cmp1, const void *cmp2) {
-    // Need to cast the void * to float *
-    float a = *((float *)cmp1);
-    float b = *((float *)cmp2);
-
-    // NAN values get pushed at the end of the array
-    if (isnan(a)) return 1;
-    if (isnan(b)) return -1;
-
-    // The comparison
-    //return a > b ? 1 : (a < b ? -1 : 0);
-    // A simpler, probably faster way:
-    return a - b;
-}
-
-/**
- * Return the median of a float array.
- * Exclude NAN values.
- * return a NAN value if less than PROBE_MINIMUM_SIGNIFICANT_VALUES non NAN values in the array.
- */
-float medianOfArray(float array[]) {
-    int arrayLength = sizeof(array) - 1;
-    int arraySize = arrayLength * sizeof(array[0]);
-    float buffer[arrayLength];
-    memcpy(buffer, array, arraySize);
-    
-    // qsort - last parameter is a function pointer to the sort function
-    qsort(buffer, arrayLength, sizeof(array[0]), sortFloatAsc);
-    
-    // Count values in array (not NAN values)
-    byte valuesCount = 0;
-    for (int k=0; k < arrayLength; k++) {
-        if (!isnan(array[k])) valuesCount++;
-    }
-
-    // If too few significant values, return NAN.
-    if (valuesCount < PROBE_MINIMUM_SIGNIFICANT_VALUES) {
-        return NAN;
-    }
-
-    int medianIndex = (valuesCount + 1) / 2;
-    float medianValue = buffer[medianIndex];
-    Serial.println("Median value: " + String(medianValue) + " from " + String(valuesCount) + " values.");
-    return medianValue;
-}
-
-void array_to_string(byte array[], unsigned int len, char buffer[])
-{
-    for (unsigned int i = 0; i < len; i++)
-    {
-        byte nib1 = (array[i] >> 4) & 0x0F;
-        byte nib2 = (array[i] >> 0) & 0x0F;
-        buffer[i*2+0] = nib1  < 0xA ? '0' + nib1  : 'A' + nib1  - 0xA;
-        buffer[i*2+1] = nib2  < 0xA ? '0' + nib2  : 'A' + nib2  - 0xA;
-    }
-    buffer[len*2] = '\0';
-}
-
 void do_send(osjob_t* j){
     // Check if there is not a current TX/RX job running
     if (LMIC.opmode & OP_TXRXPEND) {
         Serial.println(F("OP_TXRXPEND, not sending"));
     } else {
         // Prepare upstream data transmission at the next possible time.
-        uint8_t mydata[128];
-        memcpy(mydata, lpp.getBuffer(), lpp.getSize());
-        LMIC_setTxData2(1, lpp.getBuffer(), sizeof(mydata)-1, 0);
+        LMIC_setTxData2(1, mydata, sizeof(mydata)-1, 0);
         Serial.println(F("Packet queued"));
     }
     // Next TX is scheduled after TX_COMPLETE event.
-}
-
-
-void doWork() {
-
-    int probingDelay = 2000;
-    byte errorCount = 0;
-    byte probeCount = PROBE_MINIMUM_SIGNIFICANT_VALUES;
-    byte maxProbeCount = PROBE_MAXIMUM_PROBING_ITERATION;
-
-    float batVoltageValues[maxProbeCount];
-    float bme280tempValues[maxProbeCount];
-    float bme280HumidityValues[maxProbeCount];
-    float bme280PressureValues[maxProbeCount];
-    float dht22tempValues[maxProbeCount];
-    float dht22HumidityValues[maxProbeCount];
-
-    // Fill arrays with NAN
-    for (int k=0; k < maxProbeCount; k++) {
-        batVoltageValues[k] = NAN;
-        bme280tempValues[k] = NAN;
-        bme280HumidityValues[k] = NAN;
-        bme280PressureValues[k] = NAN;
-        dht22tempValues[k] = NAN;
-        dht22HumidityValues[k] = NAN;   
-    }
-
-    Serial.println("");
-
-    for (int k=0; k < probeCount; k++) {
-        Serial.println("Probing #" + String(k + 1) + " of " + String(probeCount) + " ...");
-        
-        // float batVoltage = readADC();
-        // batVoltageValues[k] = batVoltage;
-        //Serial.println("Battery voltage: " + String(batVoltage) + " V");
-
-        float * bme280Datas = probeBme280();
-        bool bme280Error = bme280Datas[3];
-        if (!bme280Error) {
-            bme280tempValues[k] = bme280Datas[0];
-            bme280HumidityValues[k] = bme280Datas[1];
-            bme280PressureValues[k] = bme280Datas[2];
-        }
-        //Serial.println("BME 280 datas: " + String(bme280Datas[0]) + " ; " + String(bme280Datas[1]) + " ; " + String(bme280Datas[2]));
-
-        bool dht22Error = false;
-        // float * dht22Datas = probeDht22();
-        // bool dht22Error = dht22Datas[2];
-        // if (!dht22Error) {
-        //     dht22tempValues[k] = dht22Datas[0];
-        //     dht22HumidityValues[k] = dht22Datas[1];
-        // }
-        //Serial.println("DHT 22 datas: " + String(dht22Datas[0]) + " ; " + String(dht22Datas[1]));
-        
-        if (probeCount < maxProbeCount && (bme280Error || dht22Error)) {
-            probeCount ++;
-            errorCount ++;
-        }
-
-        // Probe delay only befor probing
-        if (k < probeCount - 1) {
-            //Serial.println("Waiting for probingDelay: " + String(probingDelay) + " ...");
-            delay(probingDelay);
-        }
-    }
-
-    if (errorCount > 0) {
-        Serial.println("/!\\ Got some errors !");
-    }
-
-    // float batVoltageValue = medianOfArray(batVoltageValues);
-    float bme280tempValue = medianOfArray(bme280tempValues);
-    float bme280HumidityValue = medianOfArray(bme280HumidityValues);
-    float bme280PressureValue = medianOfArray(bme280PressureValues);
-    // float dht22tempValue = medianOfArray(dht22tempValues);
-    // float dht22HumidityValue = medianOfArray(dht22HumidityValues);
-
-    lpp.reset();
-    // if (!isnan(batVoltageValue))
-    //     lpp.addVoltage(LPP_BOARD_CHANNEL, batVoltageValue);
-    if (!isnan(bme280tempValue))
-        lpp.addTemperature(LPP_BME280_CHANNEL, bme280tempValue);
-    if (!isnan(bme280HumidityValue))
-        lpp.addRelativeHumidity(LPP_BME280_CHANNEL, bme280HumidityValue);
-    if (!isnan(bme280PressureValue))
-        lpp.addBarometricPressure(LPP_BME280_CHANNEL, bme280PressureValue);
-    // if (!isnan(dht22tempValue))
-    //     lpp.addTemperature(LPP_DHT22_CHANNEL, dht22tempValue);
-    // if (!isnan(dht22HumidityValue))
-    //     lpp.addRelativeHumidity(LPP_DHT22_CHANNEL, dht22HumidityValue);
-    
-    // Error count
-    // lpp.addDigitalInput(LPP_BOARD_ERROR_COUNT_CHANNEL, errorCount);
-    // lpp.addDigitalInput(LPP_BME280_ERROR_COUNT_CHANNEL, errorCount);
-    // lpp.addDigitalInput(LPP_DHT22_ERROR_COUNT_CHANNEL, errorCount);
-
-    // Probe count
-    // lpp.addDigitalInput(LPP_BOARD_PROBE_COUNT_CHANNEL, probeCount);
-    // lpp.addDigitalInput(LPP_BME280_PROBE_COUNT_CHANNEL, probeCount);
-    // lpp.addDigitalInput(LPP_DHT22_PROBE_COUNT_CHANNEL, probeCount);
-    
-#ifdef DEBUG
-    DynamicJsonDocument jsonBuffer(2048);
-    JsonArray root = jsonBuffer.to<JsonArray>();
-    lpp.decode(lpp.getBuffer(), lpp.getSize(), root);
-    //serializeJsonPretty(root, Serial);
-    serializeJson(root, Serial);
-    Serial.println("");
-#endif
-
-    char str[128] = "";
-    array_to_string(lpp.getBuffer(), lpp.getSize(), str);
-    Serial.print("LPP: ");
-    Serial.println(str);
-
-    // Start job
-    do_send(&sendjob);
-
-    Serial.println("Work done.");
 }
 
 
@@ -431,8 +213,6 @@ void setup() {
     delay(100);     // per sample code on RF_95 test
     Serial.println(F("Starting"));
 
-    Wire.begin(D39, D34, 100000);
-
     #ifdef VCC_ENABLE
     // For Pinoccio Scout boards
     pinMode(VCC_ENABLE, OUTPUT);
@@ -529,9 +309,7 @@ void setup() {
     LMIC_setDrTxpow(DR_SF7,14);
 
     // Start job
-    // do_send(&sendjob);
-
-    doWork();
+    do_send(&sendjob);
 }
 
 void loop() {

@@ -1,0 +1,6 @@
+{
+    "files.associations": {
+        "lmic_bandplan.h": "c",
+        "lmic_bandplan_eu868.h": "c"
+    }
+}
