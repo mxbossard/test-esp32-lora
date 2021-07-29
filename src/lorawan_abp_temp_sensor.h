@@ -130,9 +130,6 @@ const lmic_pinmap lmic_pins = {
     .dio = {26, 33, 32},
 };
 
-bool runLmic = false;
-
-
 void deepSleep(int deepsleep_ms) {
     Serial.print(F("Entering deepsleep for "));
     Serial.print(String(deepsleep_ms));
@@ -291,10 +288,15 @@ void do_send(osjob_t* j){
         // Prepare upstream data transmission at the next possible time.
         uint8_t mydata[128];
         memcpy(mydata, lpp.getBuffer(), lpp.getSize());
-        LMIC_setTxData2(1, lpp.getBuffer(), sizeof(mydata)-1, 0);
-        u4_t seqnoUp = LMIC.seqnoUp;
-        Serial.print(F("Packet queued with next seq up: "));
-        Serial.println(String(seqnoUp));
+        lmic_tx_error_t result = LMIC_setTxData2(1, lpp.getBuffer(), sizeof(mydata)-1, 0);
+        if (result == LMIC_ERROR_SUCCESS) {
+            u4_t seqnoUp = LMIC.seqnoUp;
+            Serial.print(F("Packet queued with next seq up: "));
+            Serial.println(String(seqnoUp));
+        } else {
+            Serial.print(F("Unable to queue message ! Error is: "));
+            Serial.println(String(result));
+        }
     }
     // Next TX is scheduled after TX_COMPLETE event.
 }
@@ -653,9 +655,12 @@ void loop() {
         os_runloop_once();
 
         const bool timeCriticalJobs = os_queryTimeCriticalJobs(ms2osticksRound((PROBING_PERIOD_IN_SEC * 1000)));
-        if (!timeCriticalJobs && !(LMIC.opmode & OP_TXRXPEND))
+        if (!timeCriticalJobs && !(LMIC.opmode & OP_TXRXPEND) && !(LMIC.opmode & OP_TXDATA))
         {
             Serial.println(F("Can go to sleep"));
+            if (startSeqUp >= LMIC.seqnoUp) {
+                Serial.println(F("!!! BUG spotted : seqnoUp not incremented !!!"));
+            }
             
             int msToSleep = PROBING_PERIOD_IN_SEC * 1000 - millis();
 
