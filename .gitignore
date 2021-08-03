@@ -6,3 +6,4 @@
 
 privateCredentials.h
 src/abpPrivateCredentials.h
+src/otaaPrivateCredentials.h

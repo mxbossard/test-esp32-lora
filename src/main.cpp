@@ -2,4 +2,6 @@
 
 //#include <lorawan_abp_hello_world.h>
 
-#include <lorawan_abp_temp_sensor.h>
+//#include <lorawan_abp_temp_sensor.h>
+
+#include <lorawan_otaa_temp_sensor.h>
