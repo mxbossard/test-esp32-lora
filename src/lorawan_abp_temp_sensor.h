@@ -54,8 +54,13 @@
 #include <CayenneLPP.h>
 
 //#define DEBUG
-#define SERIAL
+#define LOG_TO_SERIAL
+//#define LOG_TO_SCREEN
 #define SCREEN
+
+#ifdef DEBUG
+    #define SERIAL
+#endif
 
 #define LPP_BOARD_CHANNEL 0
 #define LPP_BME280_CHANNEL 1
@@ -122,7 +127,18 @@ void os_getDevEui (u1_t* buf) { }
 
 static osjob_t sendjob;
 
-CayenneLPP lpp(128);
+// Max TTN payload size for SF10 and greater : 51 bytes.
+CayenneLPP lpp(51);
+
+/*
+For 51 bytes in EU868 with 125kHz BW,
+- at SF7:  118ms    => 254 msg / day => 10 msg / hour
+- at SF8:  215.6ms  => 139 msg / day =>  5 msg / hour
+- at SF9:  390.1ms  =>  76 msg / day =>  3 msg / hour
+- at SF10: 698.4ms  =>  42 msg / day
+- at SF11: 1560.6ms =>  19 msg / day
+- at SF12: 2793.5ms =>  10 msg / day
+*/
 
 // Saves the LMIC structure during DeepSleep
 RTC_DATA_ATTR lmic_t RTC_LMIC;
@@ -135,12 +151,41 @@ const lmic_pinmap lmic_pins = {
     .dio = {26, 33, 32},
 };
 
+struct LoraStats_t {
+    uint32_t dataSendingAttemptCounter;
+	//uint32_t dataSentCounter;
+    uint32_t joinAttemptCounter;
+    uint32_t joinCounter;
+    uint32_t txCounter;
+    uint32_t txAckCounter;
+    uint32_t rxCounter;
+};
+
+RTC_DATA_ATTR LoraStats_t loraStats;
+
 #ifdef SCREEN
 CircularBuffer<String, 5> loggingQueue;
 #endif
 
-void debug(String message, bool newLine = true, bool screen = false) {
-    #ifdef SERIAL
+void displayLoggingQueue() {
+    u8g2.clearDisplay();
+    u8g2.clearBuffer();
+    int8_t ascent = u8g2.getAscent();
+    int8_t maxCharHeight = u8g2.getMaxCharHeight();
+
+    int8_t cursorY = ascent + 1;
+    for (int i = loggingQueue.size() - 1 ; i >= 0 ; i--) {
+        // retrieves the i-th element from the buffer without removing it
+        String message = loggingQueue[i];
+        u8g2.setCursor(0, cursorY);
+        u8g2.print(message);
+        cursorY += maxCharHeight + 2;
+    }
+    u8g2.sendBuffer();
+}
+
+void _log(String message, bool newLine = true, bool screen = false) {
+    #ifdef LOG_TO_SERIAL
     if (newLine) {
         Serial.println(message);
     } else {
@@ -149,72 +194,103 @@ void debug(String message, bool newLine = true, bool screen = false) {
     Serial.flush();
     #endif
 
-    #ifdef SCREEN
+    #ifdef LOG_TO_SCREEN
     if (screen) {
-        if (newLine) {
-            message += '\n';
-        }
-
         String lastMessage = loggingQueue[0];
+        int8_t maxCharCount = u8g2.getDisplayWidth() / u8g2.getMaxCharWidth() * 1.5;
         char lastMessageEol = lastMessage.charAt(lastMessage.length() - 1);
         if (lastMessageEol == '\n') {
+            message = message.substring(0, maxCharCount);
+            if (newLine) {
+                message += '\n';
+            }
             loggingQueue.unshift(message);
         } else {
             String concat = loggingQueue.shift();
-            loggingQueue.unshift(concat + message);
+            message = concat + message;
+            message = message.substring(0, maxCharCount);
+            if (newLine) {
+                message += '\n';
+            }
+            loggingQueue.unshift(message);
         }
 
-        u8g2.clearDisplay();
-        u8g2.clearBuffer();
-        int8_t ascent = u8g2.getAscent();
-        int8_t maxCharHeight = u8g2.getMaxCharHeight();
-        int8_t cursorY = ascent + 1;
-        for (int i = loggingQueue.size() - 1 ; i >= 0 ; i--) {
-            // retrieves the i-th element from the buffer without removing it
-            String message = loggingQueue[i];
-            u8g2.setCursor(0, cursorY);
-            u8g2.print(message);
-            cursorY += maxCharHeight + 2;
-        }
-        u8g2.sendBuffer();
+        displayLoggingQueue();
     }
     #endif
 }
 
-void debugln(String message, bool screen = true) {
-    debug(message, true, screen);
+void logln(String message, bool screen = true) {
+    _log(message, true, screen);
 }
 
-void debugnoln(String message, bool screen = true) {
-    debug(message, false, screen);
+void log(String message, bool screen = true) {
+    _log(message, false, screen);
 }
 
-void debug(int message, char base = 10, bool newLine = true, bool screen = false) {
-    #if defined(SERIAL) || defined(SCREEN)
-    debug(String(message, base), newLine, screen);
+void _log(int message, char base = 10, bool newLine = true, bool screen = false) {
+    #if defined(LOG_TO_SERIAL) || defined(LOG_TO_SCREEN)
+    _log(String(message, base), newLine, screen);
     #endif
 }
 
-void debugln(int message, char base = 10, bool screen = true) {
-    debug(message, base, true, screen);
+void logln(int message, char base = 10, bool screen = true) {
+    _log(message, base, true, screen);
 }
 
-void debugnoln(int message, char base = 10, bool screen = true) {
-    debug(message, base, false, screen);
+void log(int message, char base = 10, bool screen = true) {
+    _log(message, base, false, screen);
 }
 
 void deepSleep(int deepsleep_ms) {
-    debugnoln(F("Entering deepsleep for "));
-    debugnoln(deepsleep_ms);
-    debug(F(" ms"));
-    Serial.flush();
+    log(F("Entering deepsleep for "), false);
+    log(deepsleep_ms, 10, false);
+    logln(F(" ms"), false);
     //esp_sleep_enable_timer_wakeup(deepsleep_sec * 1000000);
     //esp_deep_sleep_start();
     esp_deep_sleep(1000.0 * deepsleep_ms);
 }
 
+void storeStats() {
+    //EEPROM.put(0, loraStats);
+    //EEPROM.commit();
+}
+
+void restoreStats() {
+    //EEPROM.get(0, loraStats);
+}
+
+void displayStats() {
+    String currentDatarate;
+    switch(LMIC.datarate) {
+        case EU868_DR_SF12: currentDatarate = "SF12"; break;
+        case EU868_DR_SF11: currentDatarate = "SF11"; break;
+        case EU868_DR_SF10: currentDatarate = "SF10"; break;
+        case EU868_DR_SF9: currentDatarate = "SF9"; break;
+        case EU868_DR_SF8: currentDatarate = "SF8"; break;
+        case EU868_DR_SF7: currentDatarate = "SF7"; break;
+        case EU868_DR_SF7B: currentDatarate = "SF7B"; break;
+        case EU868_DR_FSK: currentDatarate = "FSK"; break;
+        case EU868_DR_NONE: currentDatarate = "no"; break;
+        default: currentDatarate = "-"; break;
+    }
+
+    String currentTxPower = String(LMIC.adrTxPow);
+    String currentTxChannel = String(LMIC.txChnl);
+
+    String sendingAttempt = String(loraStats.dataSendingAttemptCounter);
+    String txAttempt = String(loraStats.txCounter);
+    String txAck = String(loraStats.txAckCounter);
+
+    loggingQueue.clear();
+    loggingQueue.unshift("DR: " + currentDatarate + " pow: " + currentTxPower + "dbm");
+    loggingQueue.unshift("chan: " + currentTxChannel);
+    loggingQueue.unshift("send: " + sendingAttempt + " tx: " + txAttempt + " ack: " + txAck);
+    displayLoggingQueue();
+}
+
 void storeLmic(int deepsleep_ms) {
-    debugln(F("Storing LMIC into RTC"));
+    logln(F("Storing LMIC into RTC"), false);
     RTC_LMIC = LMIC;
 
     // ESP32 can't track millis during DeepSleep and no option to advanced millis after DeepSleep.
@@ -224,7 +300,7 @@ void storeLmic(int deepsleep_ms) {
 
     // EU Like Bands
 #if defined(CFG_LMIC_EU_like)
-    debugln(F("Reset CFG_LMIC_EU_like bands"));
+    logln(F("Reset CFG_LMIC_EU_like bands"), false);
     for (int i = 0; i < MAX_BANDS; i++) {
         ostime_t correctedAvail = RTC_LMIC.bands[i].avail - ((now / 1000.0 + deepsleep_ms / 1000) * OSTICKS_PER_SEC);
         if (correctedAvail < 0) {
@@ -238,22 +314,22 @@ void storeLmic(int deepsleep_ms) {
         RTC_LMIC.globalDutyAvail = 0;
     }
 #else
-    debugln(F("No DutyCycle recalculation function!"));
+    logln(F("No DutyCycle recalculation function!"));
 #endif
 }
 
 void restoreLmic() {
-    debugln(F("Restoring LMIC from RTC"));
+    logln(F("Restoring LMIC from RTC"));
     LMIC = RTC_LMIC;
-    debugnoln(F("seq up: "));
-    debugln(String(LMIC.seqnoUp));
+    log(F("seq up: "));
+    logln(String(LMIC.seqnoUp));
 }
 
 /**
  * Return [temperature, humidty, pressure]
  */ 
 float * probeBme280() {
-    //debugln(F("Probing BME280 ..."));
+    //logln(F("Probing BME280 ..."));
     bool error = false;
     float temp = 0;
     float humidity = 0;
@@ -269,7 +345,7 @@ float * probeBme280() {
         humidity = humidity_event.relative_humidity;
         pressure = pressure_event.pressure;
     } else {
-        debugln(F("Could not find a valid BME280 sensor, check wiring!"), false);
+        logln(F("Could not find a valid BME280 sensor, check wiring!"), false);
         error = true;
     }
 
@@ -282,15 +358,15 @@ float * probeBme280() {
 }
 
 float readADC() {
-    //debugln(F("Reading ADC ..."));
+    //logln(F("Reading ADC ..."));
     float ad = 0;
     //float resolution = 3.13 * (2.187+2.200) / 2.187 / 1023; //calibrate based on your voltage divider AND Vref!
     float resolution = 3.2 * 2 * ADC_CORRECTION_RATIO / 4096;
     int adcr = analogRead(ADC_BAT_PIN);
-    //debugln("Read ADC value: " + String(adcr));
-    //debugln("Resolution: " + String(resolution, 10) + "mV");
+    //logln("Read ADC value: " + String(adcr));
+    //logln("Resolution: " + String(resolution, 10) + "mV");
     ad = adcr * resolution;
-    //debugln(F("Reading ADC done."));
+    //logln(F("Reading ADC done."));
 
     return ad;
 }
@@ -337,7 +413,7 @@ float medianOfArray(float array[]) {
 
     int medianIndex = (valuesCount + 1) / 2;
     float medianValue = buffer[medianIndex];
-    debugln("Median value: " + String(medianValue) + " from " + String(valuesCount) + " values.");
+    logln("Median value: " + String(medianValue) + " from " + String(valuesCount) + " values.", false);
     return medianValue;
 }
 
@@ -356,19 +432,17 @@ void array_to_string(byte array[], unsigned int len, char buffer[])
 void do_send(osjob_t* j){
     // Check if there is not a current TX/RX job running
     if (LMIC.opmode & OP_TXRXPEND) {
-        debugln(F("OP_TXRXPEND, not sending"));
+        logln(F("OP_TXRXPEND, not sending"));
     } else {
         // Prepare upstream data transmission at the next possible time.
-        uint8_t mydata[128];
-        memcpy(mydata, lpp.getBuffer(), lpp.getSize());
-        lmic_tx_error_t result = LMIC_setTxData2(1, lpp.getBuffer(), sizeof(mydata)-1, 0);
+        lmic_tx_error_t result = LMIC_setTxData2(1, lpp.getBuffer(), lpp.getSize(), 0);
         if (result == LMIC_ERROR_SUCCESS) {
             u4_t seqnoUp = LMIC.seqnoUp;
-            debugnoln(F("Packet queued with next seq up: "));
-            debugln(seqnoUp);
+            log(F("Packet queued with next seq up: "), false);
+            logln(seqnoUp, 10, false);
         } else {
-            debugnoln(F("Unable to queue message ! Error is: "));
-            debugln(result);
+            log(F("Unable to queue message ! Error is: "));
+            logln(result);
         }
     }
     // Next TX is scheduled after TX_COMPLETE event.
@@ -399,14 +473,14 @@ void doWork() {
         dht22HumidityValues[k] = NAN;   
     }
 
-    debugln("");
+    logln("");
 
     for (int k=0; k < probeCount; k++) {
-        debugln("Probing #" + String(k + 1) + " of " + String(probeCount) + " ...");
+        logln("Probing #" + String(k + 1) + " of " + String(probeCount) + " ...");
         
         float batVoltage = readADC();
         batVoltageValues[k] = batVoltage;
-        //debugln("Battery voltage: " + String(batVoltage) + " V");
+        //logln("Battery voltage: " + String(batVoltage) + " V");
 
         float * bme280Datas = probeBme280();
         bool bme280Error = bme280Datas[3];
@@ -415,7 +489,7 @@ void doWork() {
             bme280HumidityValues[k] = bme280Datas[1];
             bme280PressureValues[k] = bme280Datas[2];
         }
-        //debugln("BME 280 datas: " + String(bme280Datas[0]) + " ; " + String(bme280Datas[1]) + " ; " + String(bme280Datas[2]));
+        //logln("BME 280 datas: " + String(bme280Datas[0]) + " ; " + String(bme280Datas[1]) + " ; " + String(bme280Datas[2]));
 
         bool dht22Error = false;
         // float * dht22Datas = probeDht22();
@@ -424,7 +498,7 @@ void doWork() {
         //     dht22tempValues[k] = dht22Datas[0];
         //     dht22HumidityValues[k] = dht22Datas[1];
         // }
-        //debugln("DHT 22 datas: " + String(dht22Datas[0]) + " ; " + String(dht22Datas[1]));
+        //logln("DHT 22 datas: " + String(dht22Datas[0]) + " ; " + String(dht22Datas[1]));
         
         if (probeCount < maxProbeCount && (bme280Error || dht22Error)) {
             probeCount ++;
@@ -433,13 +507,13 @@ void doWork() {
 
         // Probe delay only befor probing
         if (k < probeCount - 1) {
-            //debugln("Waiting for probingDelay: " + String(probingDelay) + " ...");
+            //logln("Waiting for probingDelay: " + String(probingDelay) + " ...");
             delay(probingDelay);
         }
     }
 
     if (errorCount > 0) {
-        debugln("/!\\ Got probing errors !");
+        logln("/!\\ Got probing errors !");
     }
 
     float batVoltageValue = medianOfArray(batVoltageValues);
@@ -458,6 +532,10 @@ void doWork() {
         lpp.addRelativeHumidity(LPP_BME280_CHANNEL, bme280HumidityValue);
     if (!isnan(bme280PressureValue))
         lpp.addBarometricPressure(LPP_BME280_CHANNEL, bme280PressureValue);
+
+    if (errorCount > 0)
+        lpp.addDigitalInput(LPP_BME280_CHANNEL, errorCount);
+
     // if (!isnan(dht22tempValue))
     //     lpp.addTemperature(LPP_DHT22_CHANNEL, dht22tempValue);
     // if (!isnan(dht22HumidityValue))
@@ -465,12 +543,12 @@ void doWork() {
     
     // Error count
     // lpp.addDigitalInput(LPP_BOARD_ERROR_COUNT_CHANNEL, errorCount);
-    lpp.addDigitalInput(LPP_BME280_ERROR_COUNT_CHANNEL, errorCount);
+    //lpp.addDigitalInput(LPP_BME280_ERROR_COUNT_CHANNEL, errorCount);
     // lpp.addDigitalInput(LPP_DHT22_ERROR_COUNT_CHANNEL, errorCount);
 
     // Probe count
     // lpp.addDigitalInput(LPP_BOARD_PROBE_COUNT_CHANNEL, probeCount);
-    lpp.addDigitalInput(LPP_BME280_PROBE_COUNT_CHANNEL, probeCount);
+    //lpp.addDigitalInput(LPP_BME280_PROBE_COUNT_CHANNEL, probeCount);
     // lpp.addDigitalInput(LPP_DHT22_PROBE_COUNT_CHANNEL, probeCount);
     
 #ifdef DEBUG
@@ -479,105 +557,117 @@ void doWork() {
     lpp.decode(lpp.getBuffer(), lpp.getSize(), root);
     //serializeJsonPretty(root, Serial);
     serializeJson(root, Serial);
-    debugln("");
+    logln("");
 #endif
 
     char str[128] = "";
     array_to_string(lpp.getBuffer(), lpp.getSize(), str);
-    debugnoln("LPP: ");
-    debugln(str);
+    log("LPP: ");
+    logln(str);
 
-    debugln("Work done.");
+    logln("Work done.");
 }
 
 
 void onEvent (ev_t ev) {
-    debug(os_getTime());
-    debug(": ");
+    log(os_getTime(), 10, false);
+    log(": ", false);
     switch(ev) {
         case EV_SCAN_TIMEOUT:
-            debug(F("EV_SCAN_TIMEOUT"));
+            logln(F("EV_SCAN_TIMEOUT"));
             break;
         case EV_BEACON_FOUND:
-            debug(F("EV_BEACON_FOUND"));
+            logln(F("EV_BEACON_FOUND"));
             break;
         case EV_BEACON_MISSED:
-            debug(F("EV_BEACON_MISSED"));
+            logln(F("EV_BEACON_MISSED"));
             break;
         case EV_BEACON_TRACKED:
-            debug(F("EV_BEACON_TRACKED"));
+            logln(F("EV_BEACON_TRACKED"));
             break;
         case EV_JOINING:
-            debug(F("EV_JOINING"));
+            logln(F("EV_JOINING"));
+            loraStats.joinAttemptCounter += 1;
+            displayStats();
             break;
         case EV_JOINED:
-            debug(F("EV_JOINED"));
+            logln(F("EV_JOINED"));
+            loraStats.joinCounter += 1;
+            displayStats();
             break;
         /*
         || This event is defined but not used in the code. No
         || point in wasting codespace on it.
         ||
         || case EV_RFU1:
-        ||     debug(F("EV_RFU1"));
+        ||     logln(F("EV_RFU1"));
         ||     break;
         */
         case EV_JOIN_FAILED:
-            debug(F("EV_JOIN_FAILED"));
+            logln(F("EV_JOIN_FAILED"));
             break;
         case EV_REJOIN_FAILED:
-            debug(F("EV_REJOIN_FAILED"));
+            logln(F("EV_REJOIN_FAILED"));
             break;
         case EV_TXCOMPLETE:
-            debug(F("EV_TXCOMPLETE (includes waiting for RX windows)"));
+            loraStats.txCounter += 1;
+            logln(F("EV_TXCOMPLETE (includes waiting for RX windows)"));
             if (LMIC.txrxFlags & TXRX_ACK)
-              debug(F("Received ack"));
+                loraStats.txAckCounter += 1;
+                logln(F("Received ack"));
             if (LMIC.dataLen) {
-              debug(F("Received "));
-              debug(LMIC.dataLen);
-              debug(F(" bytes of payload"));
+                logln(F("Received "));
+                logln(LMIC.dataLen);
+                logln(F(" bytes of payload"));
             }
             // Schedule next transmission
             //os_setTimedCallback(&sendjob, os_getTime()+sec2osticks(TX_INTERVAL), do_send);
+            displayStats();
             break;
         case EV_LOST_TSYNC:
-            debug(F("EV_LOST_TSYNC"));
+            logln(F("EV_LOST_TSYNC"));
             break;
         case EV_RESET:
-            debug(F("EV_RESET"));
+            logln(F("EV_RESET"));
             break;
         case EV_RXCOMPLETE:
             // data received in ping slot
-            debug(F("EV_RXCOMPLETE"));
+            loraStats.rxCounter += 1;
+            logln(F("EV_RXCOMPLETE"));
+            displayStats();
             break;
         case EV_LINK_DEAD:
-            debug(F("EV_LINK_DEAD"));
+            logln(F("EV_LINK_DEAD"));
             break;
         case EV_LINK_ALIVE:
-            debug(F("EV_LINK_ALIVE"));
+            logln(F("EV_LINK_ALIVE"));
             break;
         /*
         || This event is defined but not used in the code. No
         || point in wasting codespace on it.
         ||
         || case EV_SCAN_FOUND:
-        ||    debug(F("EV_SCAN_FOUND"));
+        ||    logln(F("EV_SCAN_FOUND"));
         ||    break;
         */
         case EV_TXSTART:
-            debug(F("EV_TXSTART"));
+            logln(F("EV_TXSTART"));
+            displayStats();
             break;
         case EV_TXCANCELED:
-            debug(F("EV_TXCANCELED"));
+            logln(F("EV_TXCANCELED"));
+            displayStats();
             break;
         case EV_RXSTART:
             /* do not print anything -- it wrecks timing */
             break;
         case EV_JOIN_TXCOMPLETE:
-            debug(F("EV_JOIN_TXCOMPLETE: no JoinAccept"));
+            logln(F("EV_JOIN_TXCOMPLETE: no JoinAccept"));
+            displayStats();
             break;
         default:
-            debugnoln(F("Unknown event: "));
-            debug((unsigned) ev);
+            log(F("Unknown event: "));
+            logln((unsigned) ev);
             break;
     }
 }
@@ -599,7 +689,7 @@ void setup() {
 
 //    pinMode(13, OUTPUT);
 
-    #ifdef SERIAL
+    #ifdef LOG_TO_SERIAL
     while (!Serial); // wait for Serial to be initialized
     Serial.begin(115200);
     #endif
@@ -610,7 +700,7 @@ void setup() {
     u8g2.clearDisplay();
     #endif
 
-    debugln(F("Starting"));
+    logln(F("Starting"));
 
     Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
 
@@ -720,13 +810,17 @@ void setup() {
 void sendLoraMessage() {
     // Start job
     do_send(&sendjob);
+    loraStats.dataSendingAttemptCounter += 1;
 }
 
 void loop() {
+    displayStats();
     doWork();
 
     int startSeqUp = LMIC.seqnoUp;
     sendLoraMessage();
+
+    displayStats();
 
     while (true) {
         os_runloop_once();
@@ -735,19 +829,19 @@ void loop() {
         if (!timeCriticalJobs && !(LMIC.opmode & OP_TXRXPEND) && !(LMIC.opmode & OP_TXDATA))
         {
             if (startSeqUp >= LMIC.seqnoUp) {
-                debugln(F("BUG spotted: seqnoUp not incremented !!!"));
+                logln(F("BUG spotted: seqnoUp not incremented !!!"));
             }
             
             int msToSleep = PROBING_PERIOD_IN_SEC * 1000 - millis();
-            debugnoln(F("Sleep for "));
-            debugnoln(String(msToSleep));
-            debugln(F(" ms"));
+            log(F("Sleep for "));
+            log(msToSleep);
+            logln(F(" ms"));
 
         #ifndef DEBUG
             storeLmic(msToSleep);
             deepSleep(msToSleep);
         #else
-            debugln("Not deepsleeping.");
+            logln("Not deepsleeping.");
             delay(1000 * msToSleep);
             break;
         #endif

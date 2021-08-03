@@ -3,6 +3,9 @@
         "lmic_bandplan.h": "c",
         "lmic_bandplan_eu868.h": "c",
         "system_error": "cpp",
-        "*.tpp": "cpp"
+        "*.tpp": "cpp",
+        "cstdint": "cpp",
+        "random": "cpp",
+        "*.tcc": "cpp"
     }
 }
