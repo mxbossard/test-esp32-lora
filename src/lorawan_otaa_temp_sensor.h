@@ -47,10 +47,10 @@
 
 //#include "esp_wifi.h"
 //#include "driver/adc.h"
-#include <CircularBuffer.h>
+//#include <CircularBuffer.h>
 
 #include <U8g2lib.h>
-#include <Adafruit_BME280.h>
+//#include <Adafruit_BME280.h>
 #include <CayenneLPP.h>
 
 //#define DEBUG
@@ -61,24 +61,11 @@
 //#define TEST_JOIN_KO_BAD_APPEUI
 
 #ifdef DEBUG
-    #define SERIAL
+    #define LOG_TO_SERIAL
 #endif
-
-#define LPP_BOARD_CHANNEL 0
-#define LPP_BME280_CHANNEL 1
-#define LPP_BME280_PROBE_COUNT_CHANNEL 101
-#define LPP_BME280_ERROR_COUNT_CHANNEL 201
-#define PROBE_MINIMUM_SIGNIFICANT_VALUES 3
-#define PROBE_MAXIMUM_PROBING_ITERATION 5
-#define PROBE_INTERVAL_IN_MS 1000
-#define ADC_CORRECTION_RATIO ( 1 )
-
-#define PROBING_PERIOD_IN_SEC 300
 
 #define I2C_SDA_PIN 21
 #define I2C_SCL_PIN 22
-
-#define ADC_BAT_PIN 35
 
 #define LORA_NSS_PIN 18
 #define LORA_RST_PIN 23
@@ -86,16 +73,12 @@
 #define LORA_DIO1_PIN 33
 #define LORA_DIO2_PIN 32
 
+#include <probing.h>
 
+#ifdef SCREEN
 // Screen
 U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE, I2C_SCL_PIN, I2C_SDA_PIN);
-
-// BME280 sensor on I2C
-Adafruit_BME280 bme; // use I2C interface
-Adafruit_Sensor *bme_temp = bme.getTemperatureSensor();
-Adafruit_Sensor *bme_pressure = bme.getPressureSensor();
-Adafruit_Sensor *bme_humidity = bme.getHumiditySensor();
-
+#endif
 
 //
 // For normal use, we require that you edit the sketch to replace FILLMEIN
@@ -175,7 +158,6 @@ RTC_DATA_ATTR LoraStats_t loraStats;
 
 #ifdef SCREEN
 CircularBuffer<String, 5> loggingQueue;
-#endif
 
 void displayLoggingQueue() {
     u8g2.clearDisplay();
@@ -193,122 +175,10 @@ void displayLoggingQueue() {
     }
     u8g2.sendBuffer();
 }
-
-void _log(String message, bool newLine = true, bool screen = false) {
-    #ifdef LOG_TO_SERIAL
-    if (newLine) {
-        Serial.println(message);
-    } else {
-        Serial.print(message);
-    }
-    Serial.flush();
-    #endif
-
-    #ifdef LOG_TO_SCREEN
-    if (screen) {
-        String lastMessage = loggingQueue[0];
-        int8_t maxCharCount = u8g2.getDisplayWidth() / u8g2.getMaxCharWidth() * 1.5;
-        char lastMessageEol = lastMessage.charAt(lastMessage.length() - 1);
-        if (lastMessageEol == '\n') {
-            message = message.substring(0, maxCharCount);
-            if (newLine) {
-                message += '\n';
-            }
-            loggingQueue.unshift(message);
-        } else {
-            String concat = loggingQueue.shift();
-            message = concat + message;
-            message = message.substring(0, maxCharCount);
-            if (newLine) {
-                message += '\n';
-            }
-            loggingQueue.unshift(message);
-        }
-
-        displayLoggingQueue();
-    }
-    #endif
+#else
+void displayLoggingQueue() {
 }
-
-void logln(String message, bool screen = true) {
-    _log(message, true, screen);
-}
-
-void log(String message, bool screen = true) {
-    _log(message, false, screen);
-}
-
-void _log(int message, char base = 10, bool newLine = true, bool screen = false) {
-    #if defined(LOG_TO_SERIAL) || defined(LOG_TO_SCREEN)
-    _log(String(message, base), newLine, screen);
-    #endif
-}
-
-void logln(int message, char base = 10, bool screen = true) {
-    _log(message, base, true, screen);
-}
-
-void log(int message, char base = 10, bool screen = true) {
-    _log(message, base, false, screen);
-}
-
-void _log(unsigned int message, char base = 10, bool newLine = true, bool screen = false) {
-    #if defined(LOG_TO_SERIAL) || defined(LOG_TO_SCREEN)
-    _log(String(message, base), newLine, screen);
-    #endif
-}
-
-void logln(unsigned int message, char base = 10, bool screen = true) {
-    _log(message, base, true, screen);
-}
-
-void log(unsigned int message, char base = 10, bool screen = true) {
-    _log(message, base, false, screen);
-}
-
-void _log(long message, char base = 10, bool newLine = true, bool screen = false) {
-    #if defined(LOG_TO_SERIAL) || defined(LOG_TO_SCREEN)
-    _log(String(message, base), newLine, screen);
-    #endif
-}
-
-void logln(long message, char base = 10, bool screen = true) {
-    _log(message, base, true, screen);
-}
-
-void log(long message, char base = 10, bool screen = true) {
-    _log(message, base, false, screen);
-}
-
-void _log(unsigned long message, char base = 10, bool newLine = true, bool screen = false) {
-    #if defined(LOG_TO_SERIAL) || defined(LOG_TO_SCREEN)
-    _log(String(message, base), newLine, screen);
-    #endif
-}
-
-void logln(unsigned long message, char base = 10, bool screen = true) {
-    _log(message, base, true, screen);
-}
-
-void log(unsigned long message, char base = 10, bool screen = true) {
-    _log(message, base, false, screen);
-}
-
-void printHex2(unsigned v) {
-    v &= 0xff;
-    if (v < 16)
-        Serial.print('0');
-    Serial.print(v, HEX);
-}
-
-void storeStats() {
-    //EEPROM.put(0, loraStats);
-    //EEPROM.commit();
-}
-
-void restoreStats() {
-    //EEPROM.get(0, loraStats);
-}
+#endif
 
 
 static const unsigned long SCREEN_REFRESH_INTERVAL = 1000; // ms
@@ -442,229 +312,6 @@ void restoreLmic() {
     }
 }
 
-/**
- * Return [temperature, humidty, pressure]
- */ 
-float * probeBme280() {
-    //logln(F("Probing BME280 ..."));
-    bool error = false;
-    float temp = 0;
-    float humidity = 0;
-    float pressure = 0;
-
-    if (bme.begin(0x76, & Wire)) {
-        sensors_event_t temp_event, pressure_event, humidity_event;
-        bme_temp->getEvent(&temp_event);
-        bme_pressure->getEvent(&pressure_event);
-        bme_humidity->getEvent(&humidity_event);
-
-        temp = temp_event.temperature;
-        humidity = humidity_event.relative_humidity;
-        pressure = pressure_event.pressure;
-    } else {
-        logln(F("Could not find a valid BME280 sensor, check wiring!"), false);
-        error = true;
-    }
-
-    static float array[4];
-    array[0] = temp;
-    array[1] = humidity;
-    array[2] = pressure;
-    array[3] = error;
-    return array;
-}
-
-float readADC() {
-    //logln(F("Reading ADC ..."));
-    float ad = 0;
-    //float resolution = 3.13 * (2.187+2.200) / 2.187 / 1023; //calibrate based on your voltage divider AND Vref!
-    float resolution = 3.2 * 2 * ADC_CORRECTION_RATIO / 4096;
-    int adcr = analogRead(ADC_BAT_PIN);
-    //logln("Read ADC value: " + String(adcr));
-    //logln("Resolution: " + String(resolution, 10) + "mV");
-    ad = adcr * resolution;
-    //logln(F("Reading ADC done."));
-
-    return ad;
-}
-
-int sortFloatAsc(const void *cmp1, const void *cmp2) {
-    // Need to cast the void * to float *
-    float a = *((float *)cmp1);
-    float b = *((float *)cmp2);
-
-    // NAN values get pushed at the end of the array
-    if (isnan(a)) return 1;
-    if (isnan(b)) return -1;
-
-    // The comparison
-    //return a > b ? 1 : (a < b ? -1 : 0);
-    // A simpler, probably faster way:
-    return a - b;
-}
-
-/**
- * Return the median of a float array.
- * Exclude NAN values.
- * return a NAN value if less than PROBE_MINIMUM_SIGNIFICANT_VALUES non NAN values in the array.
- */
-float medianOfArray(float array[]) {
-    int arrayLength = sizeof(array) - 1;
-    int arraySize = arrayLength * sizeof(array[0]);
-    float buffer[arrayLength];
-    memcpy(buffer, array, arraySize);
-    
-    // qsort - last parameter is a function pointer to the sort function
-    qsort(buffer, arrayLength, sizeof(array[0]), sortFloatAsc);
-    
-    // Count values in array (not NAN values)
-    byte valuesCount = 0;
-    for (int k=0; k < arrayLength; k++) {
-        if (!isnan(array[k])) valuesCount++;
-    }
-
-    // If too few significant values, return NAN.
-    if (valuesCount < PROBE_MINIMUM_SIGNIFICANT_VALUES) {
-        return NAN;
-    }
-
-    int medianIndex = (valuesCount + 1) / 2;
-    float medianValue = buffer[medianIndex];
-    logln("Median value: " + String(medianValue) + " from " + String(valuesCount) + " values.", false);
-    return medianValue;
-}
-
-void array_to_string(byte array[], unsigned int len, char buffer[])
-{
-    for (unsigned int i = 0; i < len; i++)
-    {
-        byte nib1 = (array[i] >> 4) & 0x0F;
-        byte nib2 = (array[i] >> 0) & 0x0F;
-        buffer[i*2+0] = nib1  < 0xA ? '0' + nib1  : 'A' + nib1  - 0xA;
-        buffer[i*2+1] = nib2  < 0xA ? '0' + nib2  : 'A' + nib2  - 0xA;
-    }
-    buffer[len*2] = '\0';
-}
-
-void doWork() {
-
-    int probingDelay = PROBE_INTERVAL_IN_MS;
-    byte errorCount = 0;
-    byte probeCount = PROBE_MINIMUM_SIGNIFICANT_VALUES;
-    byte maxProbeCount = PROBE_MAXIMUM_PROBING_ITERATION;
-
-    float batVoltageValues[maxProbeCount];
-    float bme280tempValues[maxProbeCount];
-    float bme280HumidityValues[maxProbeCount];
-    float bme280PressureValues[maxProbeCount];
-    float dht22tempValues[maxProbeCount];
-    float dht22HumidityValues[maxProbeCount];
-
-    // Fill arrays with NAN
-    for (int k=0; k < maxProbeCount; k++) {
-        batVoltageValues[k] = NAN;
-        bme280tempValues[k] = NAN;
-        bme280HumidityValues[k] = NAN;
-        bme280PressureValues[k] = NAN;
-        dht22tempValues[k] = NAN;
-        dht22HumidityValues[k] = NAN;   
-    }
-
-    logln("");
-
-    for (int k=0; k < probeCount; k++) {
-        logln("Probing #" + String(k + 1) + " of " + String(probeCount) + " ...");
-        
-        float batVoltage = readADC();
-        batVoltageValues[k] = batVoltage;
-        //logln("Battery voltage: " + String(batVoltage) + " V");
-
-        float * bme280Datas = probeBme280();
-        bool bme280Error = bme280Datas[3];
-        if (!bme280Error) {
-            bme280tempValues[k] = bme280Datas[0];
-            bme280HumidityValues[k] = bme280Datas[1];
-            bme280PressureValues[k] = bme280Datas[2];
-        }
-        //logln("BME 280 datas: " + String(bme280Datas[0]) + " ; " + String(bme280Datas[1]) + " ; " + String(bme280Datas[2]));
-
-        bool dht22Error = false;
-        // float * dht22Datas = probeDht22();
-        // bool dht22Error = dht22Datas[2];
-        // if (!dht22Error) {
-        //     dht22tempValues[k] = dht22Datas[0];
-        //     dht22HumidityValues[k] = dht22Datas[1];
-        // }
-        //logln("DHT 22 datas: " + String(dht22Datas[0]) + " ; " + String(dht22Datas[1]));
-        
-        if (probeCount < maxProbeCount && (bme280Error || dht22Error)) {
-            probeCount ++;
-            errorCount ++;
-        }
-
-        // Probe delay only befor probing
-        if (k < probeCount - 1) {
-            //logln("Waiting for probingDelay: " + String(probingDelay) + " ...");
-            delay(probingDelay);
-        }
-    }
-
-    if (errorCount > 0) {
-        logln("/!\\ Got probing errors !");
-    }
-
-    float batVoltageValue = medianOfArray(batVoltageValues);
-    float bme280tempValue = medianOfArray(bme280tempValues);
-    float bme280HumidityValue = medianOfArray(bme280HumidityValues);
-    float bme280PressureValue = medianOfArray(bme280PressureValues);
-    // float dht22tempValue = medianOfArray(dht22tempValues);
-    // float dht22HumidityValue = medianOfArray(dht22HumidityValues);
-
-    lpp.reset();
-    if (!isnan(batVoltageValue))
-        lpp.addVoltage(LPP_BOARD_CHANNEL, batVoltageValue);
-    if (!isnan(bme280tempValue))
-        lpp.addTemperature(LPP_BME280_CHANNEL, bme280tempValue);
-    if (!isnan(bme280HumidityValue))
-        lpp.addRelativeHumidity(LPP_BME280_CHANNEL, bme280HumidityValue);
-    if (!isnan(bme280PressureValue))
-        lpp.addBarometricPressure(LPP_BME280_CHANNEL, bme280PressureValue);
-
-    if (errorCount > 0)
-        lpp.addDigitalInput(LPP_BME280_CHANNEL, errorCount);
-
-    // if (!isnan(dht22tempValue))
-    //     lpp.addTemperature(LPP_DHT22_CHANNEL, dht22tempValue);
-    // if (!isnan(dht22HumidityValue))
-    //     lpp.addRelativeHumidity(LPP_DHT22_CHANNEL, dht22HumidityValue);
-    
-    // Error count
-    // lpp.addDigitalInput(LPP_BOARD_ERROR_COUNT_CHANNEL, errorCount);
-    //lpp.addDigitalInput(LPP_BME280_ERROR_COUNT_CHANNEL, errorCount);
-    // lpp.addDigitalInput(LPP_DHT22_ERROR_COUNT_CHANNEL, errorCount);
-
-    // Probe count
-    // lpp.addDigitalInput(LPP_BOARD_PROBE_COUNT_CHANNEL, probeCount);
-    //lpp.addDigitalInput(LPP_BME280_PROBE_COUNT_CHANNEL, probeCount);
-    // lpp.addDigitalInput(LPP_DHT22_PROBE_COUNT_CHANNEL, probeCount);
-    
-#ifdef DEBUG
-    DynamicJsonDocument jsonBuffer(2048);
-    JsonArray root = jsonBuffer.to<JsonArray>();
-    lpp.decode(lpp.getBuffer(), lpp.getSize(), root);
-    //serializeJsonPretty(root, Serial);
-    serializeJson(root, Serial);
-    logln("");
-#endif
-
-    char str[128] = "";
-    array_to_string(lpp.getBuffer(), lpp.getSize(), str);
-    log("LPP: ");
-    logln(str);
-
-    logln("Work done.");
-}
-
 
 void onEvent (ev_t ev) {
     log(millis(), 10, false);
@@ -789,21 +436,12 @@ void onEvent (ev_t ev) {
 }
 
 void setup() {
-    // Disable WiFi
-    //WiFi.mode(WIFI_MODE_NULL);
-    //esp_wifi_disconnect();
-    //esp_wifi_stop();
-
-    // Disable Bluetooth
-    //btStop();
 
     // Disable ADC
     //adc_power_off(); // deprectaed in favor of adc_power_release()
 
     // Reduce cpu frequency
     //setCpuFrequencyMhz(10);
-
-//    pinMode(13, OUTPUT);
 
     #ifdef LOG_TO_SERIAL
     while (!Serial); // wait for Serial to be initialized
@@ -834,7 +472,8 @@ void setup() {
 
 }
 
-void do_send(bool confirmed){
+void sendLppMessage(bool confirmed = false) {
+    // Start job
     // Check if there is not a current TX/RX job running
     if (LMIC.opmode & OP_TXRXPEND) {
         logln(F("OP_TXRXPEND, not sending"));
@@ -851,11 +490,6 @@ void do_send(bool confirmed){
         }
     }
     // Next TX is scheduled after TX_COMPLETE event.
-}
-
-void sendLoraMessage(bool confirmed = false) {
-    // Start job
-    do_send(confirmed);
     loraStats.dataSendingAttemptCounter ++;
 }
 
@@ -911,12 +545,12 @@ void loop() {
         os_runloop_once();
 
         if (! workDone && LMIC.netid != 0) {
-            doWork();
+            doProbe();
 
             const uint maxProbingTime = (PROBE_MAXIMUM_PROBING_ITERATION + 1) * PROBE_INTERVAL_IN_MS;
             const bool probingNotPossible = os_queryTimeCriticalJobs(ms2osticksRound(maxProbingTime));
             if (!probingNotPossible && !(LMIC.opmode & OP_TXRXPEND)) { // 
-                sendLoraMessage(false);
+                sendLppMessage(false);
                 workDone = true;
             }
         }
