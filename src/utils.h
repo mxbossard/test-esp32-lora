@@ -1,6 +1,9 @@
-#include <Arduino.h>
-#include <log.h>
+#ifndef utils_h
+#define utils_h
 
+#include <Arduino.h>
+
+#include <log.h>
 
 void printHex2(unsigned v) {
     v &= 0xff;
@@ -67,3 +70,48 @@ void array_to_string(byte array[], unsigned int len, char buffer[])
     }
     buffer[len*2] = '\0';
 }
+
+
+#ifndef DISABLE_SCREEN
+#include <CircularBuffer.h>
+CircularBuffer<String, 5> journalQueue;
+
+void displayJournal() {
+#ifdef LOG_TO_SCREEN
+    # warning "Cannot displayJournal() if LOG_TO_SCREEN is defined !"
+    return;
+#endif //LOG_TO_SCREEN
+
+    u8g2.clearDisplay();
+    u8g2.clearBuffer();
+    int8_t ascent = u8g2.getAscent();
+    int8_t maxCharHeight = u8g2.getMaxCharHeight();
+
+    int8_t cursorY = ascent + 1;
+    for (int i = journalQueue.size() - 1 ; i >= 0 ; i--) {
+        // retrieves the i-th element from the buffer without removing it
+        String message = journalQueue[i];
+        u8g2.setCursor(0, cursorY);
+        u8g2.print(message);
+        cursorY += maxCharHeight + 2;
+    }
+    u8g2.sendBuffer();
+}
+
+void clearJournal() {
+    journalQueue.clear();
+}
+
+void journalMessage(String &message) {
+    journalQueue.unshift(message);
+}
+#else
+void displayJournal() {
+}
+void clearJournal() {
+}
+void journalMessage(String message) {
+}
+#endif //DISABLE_SCREEN
+
+#endif // utils_h

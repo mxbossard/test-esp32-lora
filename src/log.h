@@ -1,3 +1,6 @@
+#ifndef log_h
+#define log_h
+
 #include <Arduino.h>
 
 #ifdef LOG_TO_SERIAL
@@ -8,6 +11,20 @@
 #include <U8g2lib.h>
 #include <CircularBuffer.h>
 #endif
+
+void logSetup() {
+#ifdef LOG_TO_SCREEN
+    //u8g2.begin();
+    u8g2.setFont(u8g2_font_ncenB08_tr);
+    u8g2.clearDisplay();
+#endif
+
+#ifdef LOG_TO_SERIAL
+    while (!Serial); // wait for Serial to be initialized
+    Serial.begin(115200);
+    Serial.println("Logging initialized.");
+#endif
+}
 
 void _log(String message, bool newLine = true, bool screen = false) {
     #ifdef LOG_TO_SERIAL
@@ -108,3 +125,5 @@ void logln(unsigned long message, char base = 10, bool screen = true) {
 void log(unsigned long message, char base = 10, bool screen = true) {
     _log(message, base, false, screen);
 }
+
+#endif //log_h

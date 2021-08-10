@@ -1,5 +1,11 @@
+#ifndef probing_h
+#define probing_h
+
 #include <utils.h>
 #include <config.h>
+
+#include <Adafruit_BME280.h>
+#include <CayenneLPP.h>
 
 // BME280 sensor on I2C
 Adafruit_BME280 bme; // use I2C interface
@@ -53,9 +59,7 @@ float readADC(uint8_t pin) {
     return ad;
 }
 
-
-void doProbe() {
-
+void doProbe(CayenneLPP &lpp) {
     int probingDelay = PROBE_INTERVAL_IN_MS;
     byte errorCount = 0;
     byte probeCount = PROBE_MINIMUM_SIGNIFICANT_VALUES;
@@ -165,10 +169,20 @@ void doProbe() {
     logln("");
 #endif
 
-    char str[128] = "";
-    array_to_string(lpp.getBuffer(), lpp.getSize(), str);
-    log("LPP: ");
-    logln(str);
+    // char str[128] = "";
+    // array_to_string(lpp.getBuffer(), lpp.getSize(), str);
+    // log("LPP: ");
+    // logln(str);
 
     logln("Probing done.");
 }
+
+// void sendLppMessage(bool confirmed = false) {
+//     sendLoraWanMessage(lpp.getBuffer(), lpp.getSize(), confirmed);
+// }
+
+bool sendLppMessage(CayenneLPP &lpp, bool confirmed = false) {
+    return sendLoraWanMessage(lpp.getBuffer(), lpp.getSize(), confirmed);
+}
+
+#endif //probing_h

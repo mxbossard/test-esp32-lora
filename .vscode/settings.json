@@ -6,6 +6,9 @@
         "*.tpp": "cpp",
         "cstdint": "cpp",
         "random": "cpp",
-        "*.tcc": "cpp"
+        "*.tcc": "cpp",
+        "*.bkp": "cpp",
+        "cmath": "cpp",
+        "arduinodebug.h": "c"
     }
 }

@@ -34,10 +34,62 @@
 
 #include "abp_lmic_project_config.h"
 
+#define DBG_ENABLE_ERROR
+#define DBG_ENABLE_WARNING
+#define DBG_ENABLE_INFO
+//#define DBG_ENABLE_DEBUG
+//#define DBG_ENABLE_VERBOSE
+#include <ArduinoDebug.h>
+DEBUG_INSTANCE(80, Serial);
+
 #include <Arduino.h>
 #include <lmic.h>
 #include <hal/hal.h>
 #include <SPI.h>
+#include <Wire.h>
+
+//#include "esp_wifi.h"
+//#include "driver/adc.h"
+#include <CircularBuffer.h>
+
+#include <U8g2lib.h>
+#include <Adafruit_BME280.h>
+#include <CayenneLPP.h>
+
+#define I2C_SDA_PIN 21
+#define I2C_SCL_PIN 22
+
+#define ADC_BAT_PIN 35
+
+// Screen
+U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE, I2C_SCL_PIN, I2C_SDA_PIN);
+
+//#define DEBUG
+#define LOG_TO_SERIAL
+//#define LOG_TO_SCREEN
+#define SCREEN
+
+#ifdef DEBUG
+    #define SERIAL
+#endif
+
+#define LPP_BOARD_CHANNEL 0
+#define LPP_BME280_CHANNEL 1
+#define LPP_BME280_PROBE_COUNT_CHANNEL 101
+#define LPP_BME280_ERROR_COUNT_CHANNEL 201
+#define PROBE_MINIMUM_SIGNIFICANT_VALUES 3
+#define PROBE_MAXIMUM_PROBING_ITERATION 5
+#define ADC_CORRECTION_RATIO ( 1 )
+
+#define PROBING_PERIOD_IN_SEC 60
+
+
+// Lorawan credentials in another file
+#include "abpPrivateCredentials.h"
+
+#include <lmic_helper.h>
+#include <probing.h>
+
 
 //
 // For normal use, we require that you edit the sketch to replace FILLMEIN
@@ -45,16 +97,9 @@
 // we want to be able to compile these scripts. The regression tests define
 // COMPILE_REGRESSION_TEST, and in that case we define FILLMEIN to a non-
 // working but innocuous value.
-//
-#ifdef COMPILE_REGRESSION_TEST
-# define FILLMEIN 0
-#else
 # warning "You must replace the values marked FILLMEIN with real values from the TTN control panel!"
 # define FILLMEIN (#dont edit this, edit the lines that use FILLMEIN)
-#endif
 
-// Lorawan credentials in another file
-#include "abpPrivateCredentials.h"
 
 // LoRaWAN NwkSKey, network session key
 // This should be in big-endian (aka msb).
@@ -69,6 +114,7 @@ static const u1_t PROGMEM APPSKEY[16] = LORAWAN_APPSKEY;
 // The library converts the address to network byte order as needed, so this should be in big-endian (aka msb) too.
 static const u4_t DEVADDR = LORAWAN_DEVADDR ; // <-- Change this address for every node!
 
+
 // These callbacks are only used in over-the-air activation, so they are
 // left empty here (we cannot leave them out completely unless
 // DISABLE_JOIN is set in arduino-lmic/project_config/lmic_project_config.h,
@@ -76,21 +122,15 @@ static const u4_t DEVADDR = LORAWAN_DEVADDR ; // <-- Change this address for eve
 void os_getArtEui (u1_t* buf) { }
 void os_getDevEui (u1_t* buf) { }
 
-static uint8_t mydata[] = "Hello, world!";
-static osjob_t sendjob;
-
-// Schedule TX every this many seconds (might become longer due to duty
-// cycle limitations).
-const unsigned TX_INTERVAL = 60;
-
-
-// project-specific definitions in lmic_project_config.h file
-// #define DISABLE_PING
-// #define DISABLE_BEACONS
-// #define LMIC_ENABLE_DeviceTimeReq 0
-// #define DISABLE_JOIN
-// #define DISABLE_MCMD_PingSlotChannelReq
-
+/*
+For 51 bytes in EU868 with 125kHz BW,
+- at SF7:  118ms    => 254 msg / day => 10 msg / hour
+- at SF8:  215.6ms  => 139 msg / day =>  5 msg / hour
+- at SF9:  390.1ms  =>  76 msg / day =>  3 msg / hour
+- at SF10: 698.4ms  =>  42 msg / day
+- at SF11: 1560.6ms =>  19 msg / day
+- at SF12: 2793.5ms =>  10 msg / day
+*/
 
 // TTGO ESP32 Lora pin mapping
 const lmic_pinmap lmic_pins = {
@@ -100,145 +140,65 @@ const lmic_pinmap lmic_pins = {
     .dio = {26, 33, 32},
 };
 
-
-void do_send(osjob_t* j){
-    // Check if there is not a current TX/RX job running
-    if (LMIC.opmode & OP_TXRXPEND) {
-        Serial.println(F("OP_TXRXPEND, not sending"));
-    } else {
-        // Prepare upstream data transmission at the next possible time.
-        LMIC_setTxData2(1, mydata, sizeof(mydata)-1, 0);
-        Serial.println(F("Packet queued"));
-    }
-    // Next TX is scheduled after TX_COMPLETE event.
-}
-
-
-void onEvent (ev_t ev) {
-    Serial.print(os_getTime());
-    Serial.print(": ");
-    switch(ev) {
-        case EV_SCAN_TIMEOUT:
-            Serial.println(F("EV_SCAN_TIMEOUT"));
-            break;
-        case EV_BEACON_FOUND:
-            Serial.println(F("EV_BEACON_FOUND"));
-            break;
-        case EV_BEACON_MISSED:
-            Serial.println(F("EV_BEACON_MISSED"));
-            break;
-        case EV_BEACON_TRACKED:
-            Serial.println(F("EV_BEACON_TRACKED"));
-            break;
-        case EV_JOINING:
-            Serial.println(F("EV_JOINING"));
-            break;
-        case EV_JOINED:
-            Serial.println(F("EV_JOINED"));
-            break;
-        /*
-        || This event is defined but not used in the code. No
-        || point in wasting codespace on it.
-        ||
-        || case EV_RFU1:
-        ||     Serial.println(F("EV_RFU1"));
-        ||     break;
-        */
-        case EV_JOIN_FAILED:
-            Serial.println(F("EV_JOIN_FAILED"));
-            break;
-        case EV_REJOIN_FAILED:
-            Serial.println(F("EV_REJOIN_FAILED"));
-            break;
-        case EV_TXCOMPLETE:
-            Serial.println(F("EV_TXCOMPLETE (includes waiting for RX windows)"));
-            if (LMIC.txrxFlags & TXRX_ACK)
-              Serial.println(F("Received ack"));
-            if (LMIC.dataLen) {
-              Serial.println(F("Received "));
-              Serial.println(LMIC.dataLen);
-              Serial.println(F(" bytes of payload"));
-            }
-            // Schedule next transmission
-            os_setTimedCallback(&sendjob, os_getTime()+sec2osticks(TX_INTERVAL), do_send);
-            break;
-        case EV_LOST_TSYNC:
-            Serial.println(F("EV_LOST_TSYNC"));
-            break;
-        case EV_RESET:
-            Serial.println(F("EV_RESET"));
-            break;
-        case EV_RXCOMPLETE:
-            // data received in ping slot
-            Serial.println(F("EV_RXCOMPLETE"));
-            break;
-        case EV_LINK_DEAD:
-            Serial.println(F("EV_LINK_DEAD"));
-            break;
-        case EV_LINK_ALIVE:
-            Serial.println(F("EV_LINK_ALIVE"));
-            break;
-        /*
-        || This event is defined but not used in the code. No
-        || point in wasting codespace on it.
-        ||
-        || case EV_SCAN_FOUND:
-        ||    Serial.println(F("EV_SCAN_FOUND"));
-        ||    break;
-        */
-        case EV_TXSTART:
-            Serial.println(F("EV_TXSTART"));
-            break;
-        case EV_TXCANCELED:
-            Serial.println(F("EV_TXCANCELED"));
-            break;
-        case EV_RXSTART:
-            /* do not print anything -- it wrecks timing */
-            break;
-        case EV_JOIN_TXCOMPLETE:
-            Serial.println(F("EV_JOIN_TXCOMPLETE: no JoinAccept"));
-            break;
-        default:
-            Serial.print(F("Unknown event: "));
-            Serial.println((unsigned) ev);
-            break;
-    }
+void deepSleep(int deepsleep_ms) {
+    log(F("Entering deepsleep for "), false);
+    log(deepsleep_ms, 10, false);
+    logln(F(" ms"), false);
+    //esp_sleep_enable_timer_wakeup(deepsleep_sec * 1000000);
+    //esp_deep_sleep_start();
+    esp_deep_sleep(1000.0 * deepsleep_ms);
 }
 
 void setup() {
-//    pinMode(13, OUTPUT);
-    while (!Serial); // wait for Serial to be initialized
-    Serial.begin(115200);
-    delay(100);     // per sample code on RF_95 test
-    Serial.println(F("Starting"));
 
-    #ifdef VCC_ENABLE
-    // For Pinoccio Scout boards
-    pinMode(VCC_ENABLE, OUTPUT);
-    digitalWrite(VCC_ENABLE, HIGH);
-    delay(1000);
-    #endif
+    // Disable ADC
+    //adc_power_off(); // deprectaed in favor of adc_power_release()
+
+    // Reduce cpu frequency
+    //setCpuFrequencyMhz(10);
+
+    logSetup();
+
+    DBG_DEBUG("Starting");
+
+#ifdef DISABLE_SCREEN
+    u8g2.setPowerSave(true);
+#else
+    u8g2.begin();
+    u8g2.setFont(u8g2_font_ncenB08_tr);
+    u8g2.clearDisplay();
+#endif
+
+    //Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
+    // DBG_DEBUG("Wire began");
 
     // LMIC init
     os_init();
+    DBG_DEBUG("LMIC inited");
+
     // Reset the MAC state. Session and pending data transfers will be discarded.
     LMIC_reset();
+    DBG_DEBUG("LMIC reset");
 
-    // Set static session parameters. Instead of dynamically establishing a session
-    // by joining the network, precomputed session parameters are be provided.
-    #ifdef PROGMEM
-    // On AVR, these values are stored in flash and only copied to RAM
-    // once. Copy them to a temporary buffer here, LMIC_setSession will
-    // copy them into a buffer of its own again.
-    uint8_t appskey[sizeof(APPSKEY)];
-    uint8_t nwkskey[sizeof(NWKSKEY)];
-    memcpy_P(appskey, APPSKEY, sizeof(APPSKEY));
-    memcpy_P(nwkskey, NWKSKEY, sizeof(NWKSKEY));
-    LMIC_setSession (0x13, DEVADDR, nwkskey, appskey);
-    #else
-    // If not running an AVR with PROGMEM, just use the arrays directly
-    LMIC_setSession (0x13, DEVADDR, NWKSKEY, APPSKEY);
-    #endif
+    if (RTC_LMIC.seqnoUp != 0) {
+        restoreLmic();
+    } else {
+      // Set static session parameters. Instead of dynamically establishing a session
+      // by joining the network, precomputed session parameters are be provided.
+      #ifdef PROGMEM
+        // On AVR, these values are stored in flash and only copied to RAM
+        // once. Copy them to a temporary buffer here, LMIC_setSession will
+        // copy them into a buffer of its own again.
+        uint8_t appskey[sizeof(APPSKEY)];
+        uint8_t nwkskey[sizeof(NWKSKEY)];
+        memcpy_P(appskey, APPSKEY, sizeof(APPSKEY));
+        memcpy_P(nwkskey, NWKSKEY, sizeof(NWKSKEY));
+        LMIC_setSession (0x13, DEVADDR, nwkskey, appskey);
+      #else
+        // If not running an AVR with PROGMEM, just use the arrays directly
+        LMIC_setSession (0x13, DEVADDR, NWKSKEY, APPSKEY);
+      #endif
+    }
 
     #if defined(CFG_eu868)
     // Set up the channels used by the Things Network, which corresponds
@@ -306,21 +266,65 @@ void setup() {
 
     // Set data rate and transmit power for uplink
     LMIC_setDrTxpow(DR_SF7,14);
-
-    // Start job
-    do_send(&sendjob);
 }
 
 void loop() {
-    unsigned long now;
-    now = millis();
-    if ((now & 512) != 0) {
-      digitalWrite(25, HIGH);
-    }
-    else {
-      digitalWrite(25, LOW);
-    }
+    DBG_DEBUG("loop started");
+    displayStats();
 
-    os_runloop_once();
+    int startSeqUp = LMIC.seqnoUp;
+
+    displayStats();
+
+    logLmicStatus();
+
+    bool probingDone = false;
+    
+    while (true) {
+        os_runloop_once();
+
+        if (! probingDone && LMIC.netid != 0) {
+            const uint maxProbingTime = (PROBE_MAXIMUM_PROBING_ITERATION + 1) * PROBE_INTERVAL_IN_MS;
+            const bool probingNotPossible = os_queryTimeCriticalJobs(ms2osticksRound(maxProbingTime));
+            if (!probingNotPossible && !(LMIC.opmode & (OP_POLL | OP_TXDATA | OP_TXRXPEND))) { // 
+                DBG_DEBUG("Probing started");
+                CayenneLPP lpp = doProbe();
+                //doProbe();
+
+                probingDone = true;
+                DBG_DEBUG("Probing ended");
+                sendLppMessage(lpp, false);
+
+                DBG_DEBUG("Probing done");
+            } else {
+                //DBG_DEBUG("Probing not possible right now");
+                //logLmicStatus();
+            }
+        }
+
+        displayStats();
+
+        const bool timeCriticalJobs = os_queryTimeCriticalJobs(ms2osticksRound((PROBING_PERIOD_IN_SEC * 1000)));
+        if (probingDone && !timeCriticalJobs && !(LMIC.opmode & (OP_POLL | OP_TXDATA | OP_TXRXPEND)))
+        {
+            if (startSeqUp >= LMIC.seqnoUp) {
+                logln(F("BUG spotted: seqnoUp not incremented !!!"));
+            }
+            
+            int msToSleep = PROBING_PERIOD_IN_SEC * 1000 - millis();
+            log(F("Sleep for "));
+            log(msToSleep);
+            logln(F(" ms"));
+
+        #ifndef DEBUG
+            storeLmic(msToSleep);
+            deepSleep(msToSleep);
+        #else
+            logln("Not deepsleeping.");
+            delay(1000 * msToSleep);
+            break;
+        #endif
+        }
+    }
 
 }

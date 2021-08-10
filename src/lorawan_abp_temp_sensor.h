@@ -32,12 +32,7 @@
  *
  *******************************************************************************/
 
- // References:
- // [feather] adafruit-feather-m0-radio-with-lora-module.pdf
-
-// FIXME This should works but do not. To fix this copy the content of the file into lmic_lib/project_config/lmic_project_config.h
-//#define ARDUINO_LMIC_PROJECT_CONFIG_H abp_lmic_project_config.h
-
+#include "abp_lmic_project_config.h"
 
 #include <Arduino.h>
 #include <lmic.h>
