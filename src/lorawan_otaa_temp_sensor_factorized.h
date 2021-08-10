@@ -78,14 +78,7 @@ U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE, I2C_SCL_PIN, I2
 #include <lmic_helper.h>
 #include <probing.h>
 
-//
-// For normal use, we require that you edit the sketch to replace FILLMEIN
-// with values assigned by the TTN console. However, for regression tests,
-// we want to be able to compile these scripts. The regression tests define
-// COMPILE_REGRESSION_TEST, and in that case we define FILLMEIN to a non-
-// working but innocuous value.
-# warning "You must replace the values marked FILLMEIN with real values from the TTN control panel!"
-# define FILLMEIN (#dont edit this, edit the lines that use FILLMEIN)
+#define FILLMEIN (#dont edit this, edit the lines that use FILLMEIN)
 
 // This EUI must be in little-endian format, so least-significant-byte
 // first. When copying an EUI from ttnctl output, this means to reverse
@@ -206,11 +199,15 @@ void loop() {
     if (LMIC.devaddr == 0 && !(LMIC.opmode & OP_JOINING)) {
         DBG_DEBUG("No Dev addr, not Joining");
         // Not JOINED nor JOINING yet.
-        if (false && isSavedLoraWanSession()) {
+        #ifdef SAVE_TO_EEPROM
+        if (isSavedLoraWanSession()) {
             restoreLoraWanSession();
         } else {
             LMIC_startJoining();
         }
+        #else
+        LMIC_startJoining();
+        #endif //SAVE_TO_EEPROM
     } else {
         DBG_DEBUG("Dev addr: %x", LMIC.devaddr);
     }
@@ -250,12 +247,15 @@ void loop() {
                         probingTime = millis();
                         DBG_DEBUG("Probing ended");
                         probingDone = true;
+                        
                     } else {
                         DBG_DEBUG("Not safe probe during %d ms.", maxProbingTime);
                     }
                 }
 
-                if (probingDone && ! sendMessageDone) {
+                if (probingDone && ! sendMessageDone && LMIC_queryTxReady()) {
+                    loraStats.probeCounter ++;
+                    displayStats(LMIC, true);
                     bool msgSchedule = sendLppMessage(lpp, false);
                     //bool msgSchedule = sendLoraWanMessage(lpp->getBuffer(), lpp->getSize(), false);
                     if (msgSchedule) {
@@ -265,8 +265,8 @@ void loop() {
                     }
                 }
 
-                if (probingDone && sendMessageFailed) {
-                    // Failed to send message.
+                if (probingDone && !sendMessageDone) {
+                    // Send message not done yet
                     if (millis() < probingTime + probingOutdatedTimeMs) {
                         // Let running the loop for a while if probed data are not oudated
                         DBG_DEBUG("Failed to schedule tx. Will retry.");

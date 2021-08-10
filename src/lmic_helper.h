@@ -18,6 +18,7 @@ struct LoraStats_t {
 	//uint32_t dataSentCounter;
     uint32_t joinAttemptCounter;
     uint32_t joinedCounter;
+    uint32_t probeCounter;
     uint32_t txCounter;
     uint32_t txAckCounter;
     uint32_t rxCounter;
@@ -55,6 +56,7 @@ void displayStats(struct lmic_t lmic, bool force = false, unsigned int sleepingT
 
     String currentTxPower = String(lmic.adrTxPow);
     String currentTxChannel = String(lmic.txChnl);
+    String probeCounter = String(loraStats.probeCounter);
 
     String joiningAttempt = String(loraStats.joinAttemptCounter);
     String joined = String(loraStats.joinedCounter);
@@ -65,7 +67,7 @@ void displayStats(struct lmic_t lmic, bool force = false, unsigned int sleepingT
 
     clearJournal();
     journalMessage("DR: " + currentDatarate + " pow: " + currentTxPower + "dbm");
-    journalMessage("chan: " + currentTxChannel);
+    journalMessage("Probe: " + probeCounter + " chan: " + currentTxChannel);
     journalMessage("joined: " + joined + " / " + joiningAttempt);
     journalMessage("tx: " + txAttempt + " / " + sendingAttempt + " ack: " + txAck);
     if (sleepingTime > 0) {
@@ -107,81 +109,6 @@ void logLmicStatus(struct lmic_t lmic) {
     DBG_INFO("LMIC txend: %d ; rxtime: %d ; lbt_ticks: %d ; globalDutyAvail: %d", lmic.txend, lmic.rxtime, lmic.lbt_ticks, lmic.globalDutyAvail);
     
     DBG_VERBOSE("logLmicStatus() ended");
-}
-
-void initLorawanEepromStorage() {
-    preferences.begin(LORAWAN_SESSION_EEPROM_NS, false);
-}
-
-void saveLoraWanSession() {
-    DBG_VERBOSE("saveLoraWanSession() began");
-    u1_t appeui[8];
-    u1_t deveui[8];
-    u1_t appkey[16];
-    os_getArtEui(appeui);
-    os_getDevEui(deveui);
-    os_getDevKey(appkey);
-    preferences.putBytes("APPEUI", appeui, sizeof(appeui));
-    preferences.putBytes("DEVEUI", deveui, sizeof(deveui));
-    preferences.putBytes("APPKEY", appkey, sizeof(appkey));
-
-    u4_t netid = 0;
-    devaddr_t devaddr = 0;
-    u1_t nwkKey[16];
-    u1_t artKey[16];
-    LMIC_getSessionKeys(&netid, &devaddr, nwkKey, artKey);
-
-    preferences.putBytes("NWKSKEY", nwkKey, sizeof(nwkKey));
-    preferences.putBytes("APPSKEY", artKey, sizeof(artKey));
-    preferences.putInt("DEVADDR", devaddr);
-    preferences.putInt("NETID", netid);
-    DBG_VERBOSE("saveLoraWanSession() ended");
-}
-
-bool isSavedLoraWanSession() {
-    DBG_VERBOSE("isSavedLoraWanSession() began");
-    u1_t appeui[8];
-    u1_t deveui[8];
-    u1_t appkey[16];
-    os_getArtEui(appeui);
-    os_getDevEui(deveui);
-    os_getDevKey(appkey);
-
-    u1_t savedAppeui[8];
-    u1_t savedDeveui[8];
-    u1_t savedAppkey[16];
-    preferences.getBytes("APPEUI", savedAppeui, sizeof(savedAppeui));
-    preferences.getBytes("DEVEUI", savedDeveui, sizeof(savedDeveui));
-    preferences.getBytes("APPKEY", savedAppkey, sizeof(savedAppkey));
-    u4_t savedNetid = preferences.getInt("NETID", 0);
-
-    DBG_INFO("Saved netid: %d", savedNetid);
-    //logln(savedNetid, DEC);
-
-    return savedNetid != 0 
-        && memcmp(appeui, savedAppeui, sizeof(appeui)) == 0
-        && memcmp(deveui, savedDeveui, sizeof(appeui)) == 0
-        && memcmp(appkey, savedAppkey, sizeof(appeui)) == 0;
-}
-
-void restoreLoraWanSession() {
-    DBG_VERBOSE("restoreLoraWanSession() began");
-    u1_t nwkskey[16];
-    u1_t appskey[16];
-    preferences.getBytes("NWKSKEY", nwkskey, sizeof(nwkskey));
-    preferences.getBytes("APPSKEY", appskey, sizeof(appskey));
-    devaddr_t devaddr = preferences.getInt("DEVADDR");
-    u4_t netid = preferences.getInt("NETID");
-
-    LMIC_setSession (netid, devaddr, nwkskey, appskey);
-
-    //LMIC_setLinkCheckMode(1);
-    // TTN uses SF9 for its RX2 window.
-    //LMIC.dn2Dr = DR_SF9;
-    // Set data rate and transmit power for uplink
-    //LMIC_setDrTxpow(DR_SF7,14);
-
-    DBG_VERBOSE("restoreLoraWanSession() ended");
 }
 
 void logLoraWanSessionInfos() {
@@ -228,21 +155,31 @@ bool sendLoraWanMessage(xref2u1_t data, u1_t dlen, bool confirmed = false) {
 
         // Prepare upstream data transmission at the next possible time.
         lmic_tx_error_t result = LMIC_setTxData2(1, data, dlen, confirmed);
+        loraStats.dataSendingAttemptCounter ++;
         if (result == LMIC_ERROR_SUCCESS) {
             u4_t seqnoUp = LMIC.seqnoUp;
             scheduledMessage = true;
-            DBG_VERBOSE(F("Packet queued with next seq up: %d"), seqnoUp);
+            DBG_VERBOSE("Packet queued with next seq up: %d", seqnoUp);
         } else {
-            DBG_VERBOSE(F("Unable to queue message ! Error is: %d"), result);
+            DBG_VERBOSE("Unable to queue message ! Error is: %d", result);
         }
     }
-    loraStats.dataSendingAttemptCounter ++;
+    
     DBG_VERBOSE("sendLoraWanMessage() ended");
     return scheduledMessage;
 }
 
 // Saves the LMIC structure during DeepSleep
 RTC_DATA_ATTR lmic_t RTC_LMIC;
+
+void updateJobForDeepsleep(osjob_t *job, long deepsleepTicks) {
+    if (job != NULL) {
+        DBG_DEBUG("Updating a job for deepsleep. Previous deadline: %d", job->deadline);
+        job->deadline -= deepsleepTicks;
+        DBG_DEBUG("New job deadline: %d", job->deadline);
+        updateJobForDeepsleep(job->next, deepsleepTicks);
+    }
+}
 
 void storeLmic(int deepsleep_ms) {
     logln(F("Storing LMIC into RTC"), false);
@@ -261,8 +198,11 @@ void storeLmic(int deepsleep_ms) {
     // Update first job deadline for deepsleep
     // FIXME: update all job deadlines
     long deepsleepTicks = (deepsleep_ms / 1000.0) * OSTICKS_PER_SEC;
-    RTC_LMIC.osjob.deadline -= deepsleepTicks;
-    RTC_LMIC.osjob.next = NULL;
+    // RTC_LMIC.osjob.deadline -= deepsleepTicks;
+    // RTC_LMIC.osjob.next = NULL;
+
+    // Update all jobs deadline for deepsleep
+    updateJobForDeepsleep(&RTC_LMIC.osjob, deepsleepTicks);
     
     // Move timings in passed for next deepsleep wakening
     long tickShift = ((now / 1000.0 + deepsleep_ms / 1000.0) * OSTICKS_PER_SEC);
@@ -401,5 +341,83 @@ void onEvent (ev_t ev) {
             break;
     }
 }
+
+
+#ifdef SAVE_TO_EEPROM
+void initLorawanEepromStorage() {
+    preferences.begin(LORAWAN_SESSION_EEPROM_NS, false);
+}
+
+void saveLoraWanSession() {
+    DBG_VERBOSE("saveLoraWanSession() began");
+    u1_t appeui[8];
+    u1_t deveui[8];
+    u1_t appkey[16];
+    os_getArtEui(appeui);
+    os_getDevEui(deveui);
+    os_getDevKey(appkey);
+    preferences.putBytes("APPEUI", appeui, sizeof(appeui));
+    preferences.putBytes("DEVEUI", deveui, sizeof(deveui));
+    preferences.putBytes("APPKEY", appkey, sizeof(appkey));
+
+    u4_t netid = 0;
+    devaddr_t devaddr = 0;
+    u1_t nwkKey[16];
+    u1_t artKey[16];
+    LMIC_getSessionKeys(&netid, &devaddr, nwkKey, artKey);
+
+    preferences.putBytes("NWKSKEY", nwkKey, sizeof(nwkKey));
+    preferences.putBytes("APPSKEY", artKey, sizeof(artKey));
+    preferences.putInt("DEVADDR", devaddr);
+    preferences.putInt("NETID", netid);
+    DBG_VERBOSE("saveLoraWanSession() ended");
+}
+
+bool isSavedLoraWanSession() {
+    DBG_VERBOSE("isSavedLoraWanSession() began");
+    u1_t appeui[8];
+    u1_t deveui[8];
+    u1_t appkey[16];
+    os_getArtEui(appeui);
+    os_getDevEui(deveui);
+    os_getDevKey(appkey);
+
+    u1_t savedAppeui[8];
+    u1_t savedDeveui[8];
+    u1_t savedAppkey[16];
+    preferences.getBytes("APPEUI", savedAppeui, sizeof(savedAppeui));
+    preferences.getBytes("DEVEUI", savedDeveui, sizeof(savedDeveui));
+    preferences.getBytes("APPKEY", savedAppkey, sizeof(savedAppkey));
+    u4_t savedNetid = preferences.getInt("NETID", 0);
+
+    DBG_INFO("Saved netid: %d", savedNetid);
+    //logln(savedNetid, DEC);
+
+    return savedNetid != 0 
+        && memcmp(appeui, savedAppeui, sizeof(appeui)) == 0
+        && memcmp(deveui, savedDeveui, sizeof(appeui)) == 0
+        && memcmp(appkey, savedAppkey, sizeof(appeui)) == 0;
+}
+
+void restoreLoraWanSession() {
+    DBG_VERBOSE("restoreLoraWanSession() began");
+    u1_t nwkskey[16];
+    u1_t appskey[16];
+    preferences.getBytes("NWKSKEY", nwkskey, sizeof(nwkskey));
+    preferences.getBytes("APPSKEY", appskey, sizeof(appskey));
+    devaddr_t devaddr = preferences.getInt("DEVADDR");
+    u4_t netid = preferences.getInt("NETID");
+
+    LMIC_setSession (netid, devaddr, nwkskey, appskey);
+
+    //LMIC_setLinkCheckMode(1);
+    // TTN uses SF9 for its RX2 window.
+    //LMIC.dn2Dr = DR_SF9;
+    // Set data rate and transmit power for uplink
+    //LMIC_setDrTxpow(DR_SF7,14);
+
+    DBG_VERBOSE("restoreLoraWanSession() ended");
+}
+#endif //SAVE_TO_EEPROM
 
 #endif //lmic_helper_h
