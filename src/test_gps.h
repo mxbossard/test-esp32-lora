@@ -4,6 +4,8 @@
 #define GPS_RX 36
 #define GPS_TX 39
 
+#define KNOT_TO_METER_PER_SECOND 1.943844
+
 SoftwareSerial GpsSerial(GPS_TX, GPS_RX);
  
 void setup() {
@@ -27,18 +29,28 @@ String getValue(String data, char separator, int index) {
   return found>index ? data.substring(strIndex[0], strIndex[1]) : "";
 }
 
+double adaptGpsData(String data) {
+    // 4754.0518 => 47.540518 ; 00154.8579 => 1.548579
+    // String integer = getValue(data, '.', 0);
+    // String decimal = getValue(data, '.', 1);
+    // String rescaleInteger = integer.substring(0, integer.length() - 2);
+    // String rescaleDecimal = integer.substring(integer.length() - 2) + decimal;
+    // String rescaleData = rescaleInteger + "." + rescaleDecimal;
+    return data.toDouble() / 100;
+}
+
 void loop() {
     char carac = 0;
     String message = "";
     // boucle qui attends un \n pour valider la trame et la décoder (/!\ Passer l'option en bas à droite du moniteur série en "Nouvelle ligne")
     while (carac != '\n') {
-    // si un caractère est présent sur la liaison
-    if(GpsSerial.available()) {
-        // lecture d'un caractère
-        carac = GpsSerial.read();
-        // concaténation du caractère au message
-        message = message + carac; 
-    }
+        // si un caractère est présent sur la liaison
+        if(GpsSerial.available()) {
+            // lecture d'un caractère
+            carac = GpsSerial.read();
+            // concaténation du caractère au message
+            message = message + carac; 
+        }
     }
     //Serial.print(message);
 
@@ -53,13 +65,21 @@ void loop() {
         String longitude = getValue(payload, ',', 5);
         String ewIndicator = getValue(payload, ',', 6);
         String speedOverGroundKnots = getValue(payload, ',', 7);
+        String courseOverGroundDegrees = getValue(payload, ',', 8);
+        String dateString = getValue(payload, ',', 9);
 
         if (latitude != "" && longitude != "") {
             // $GPRMC,192441.000,A,4754.0518,N,00154.8579,E,1.77,327.72,230921,,,D*64
             // At:192441.000 => 4754.0518N 00154.8579E
             Serial.println("At:" + utsPosition + " => " + latitude + nsIndicator + " " + longitude + ewIndicator);
+            double floatLatitude = adaptGpsData(latitude);
+            double floatLongitude = adaptGpsData(longitude);
+            float speedOverGround = KNOT_TO_METER_PER_SECOND * speedOverGroundKnots.toDouble();
+            float courseOverGround = courseOverGroundDegrees.toDouble();
+            String date = dateString + " " + utsPosition;
+            Serial.println("At:" + date + " => " + String(floatLatitude, 6) + " " + String(floatLongitude, 6) + " ; speed: " + speedOverGround + " m/s ; course: " + courseOverGround + " °");
         }
-}
+    }
 }
  
 /*

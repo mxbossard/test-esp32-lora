@@ -10,5 +10,5 @@
 //#include <lorawan_otaa_temp_sensor_factorized.h>
 
 
-#include <test_gps.h>
-//#include <test_gps_2.h>
+//#include <test_gps.h>
+#include <test_gps2.h>
