@@ -9,6 +9,8 @@
         "*.tcc": "cpp",
         "*.bkp": "cpp",
         "cmath": "cpp",
-        "arduinodebug.h": "c"
+        "arduinodebug.h": "c",
+        "chrono": "cpp",
+        "algorithm": "cpp"
     }
 }
