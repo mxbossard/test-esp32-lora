@@ -3,6 +3,7 @@
 
 #include <utils.h>
 #include <config.h>
+#include <Sampler.h>
 
 #include <Adafruit_BME280.h>
 #include <CayenneLPP.h>
@@ -66,7 +67,9 @@ void doProbe(CayenneLPP &lpp) {
     byte maxProbeCount = PROBE_MAXIMUM_PROBING_ITERATION;
 
     float batVoltageValues[maxProbeCount];
+    Sampler batVoltageSampler(probeCount, maxProbeCount);
     float bme280tempValues[maxProbeCount];
+    Sampler bme280tempSampler(probeCount, maxProbeCount);
     float bme280HumidityValues[maxProbeCount];
     float bme280PressureValues[maxProbeCount];
     float dht22tempValues[maxProbeCount];
@@ -89,14 +92,18 @@ void doProbe(CayenneLPP &lpp) {
         
         float batVoltage = readADC(ADC_BAT_PIN);
         batVoltageValues[k] = batVoltage;
+        batVoltageSampler.addSample(batVoltage);
         //logln("Battery voltage: " + String(batVoltage) + " V");
 
         float * bme280Datas = probeBme280();
         bool bme280Error = bme280Datas[3];
         if (!bme280Error) {
             bme280tempValues[k] = bme280Datas[0];
+            bme280tempSampler.addSample(bme280Datas[0]);
             bme280HumidityValues[k] = bme280Datas[1];
             bme280PressureValues[k] = bme280Datas[2];
+        } else {
+            bme280tempSampler.reportError();
         }
         //logln("BME 280 datas: " + String(bme280Datas[0]) + " ; " + String(bme280Datas[1]) + " ; " + String(bme280Datas[2]));
 
@@ -126,7 +133,8 @@ void doProbe(CayenneLPP &lpp) {
     }
 
     float batVoltageValue = medianOfArray(batVoltageValues, PROBE_MINIMUM_SIGNIFICANT_VALUES);
-    float bme280tempValue = medianOfArray(bme280tempValues, PROBE_MINIMUM_SIGNIFICANT_VALUES);
+    //float bme280tempValue = medianOfArray(bme280tempValues, PROBE_MINIMUM_SIGNIFICANT_VALUES);
+    float bme280tempValue = bme280tempSampler.median();
     float bme280HumidityValue = medianOfArray(bme280HumidityValues, PROBE_MINIMUM_SIGNIFICANT_VALUES);
     float bme280PressureValue = medianOfArray(bme280PressureValues, PROBE_MINIMUM_SIGNIFICANT_VALUES);
     // float dht22tempValue = medianOfArray(dht22tempValues, PROBE_MINIMUM_SIGNIFICANT_VALUES);
