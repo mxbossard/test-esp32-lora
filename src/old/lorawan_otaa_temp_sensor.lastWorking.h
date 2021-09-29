@@ -32,12 +32,33 @@
  *
  *******************************************************************************/
 
-#include "otaa_lmic_project_config.h"
+ // References:
+ // [feather] adafruit-feather-m0-radio-with-lora-module.pdf
+
+#define ARDUINO_LMIC_PROJECT_CONFIG_H_SUPPRESS
+#define CFG_eu868 1
+#define CFG_sx1276_radio 1
+#define LMIC_USE_INTERRUPTS
+
+#define DISABLE_PING
+#define DISABLE_BEACONS
+#define LMIC_ENABLE_DeviceTimeReq 0
+//#define DISABLE_JOIN
+#define DISABLE_MCMD_PingSlotChannelReq
 
 #include <Arduino.h>
+// #include <lmic.h>
+// #include <hal/hal.h>
 #include <SPI.h>
 #include <Wire.h>
+
+//#include "esp_wifi.h"
+//#include "driver/adc.h"
+//#include <CircularBuffer.h>
+
 #include <U8g2lib.h>
+//#include <Adafruit_BME280.h>
+//#include <CayenneLPP.h>
 
 #define DBG_ENABLE_ERROR
 #define DBG_ENABLE_WARNING
@@ -67,9 +88,6 @@ DEBUG_INSTANCE(80, Serial);
 #define LORA_DIO1_PIN 33
 #define LORA_DIO2_PIN 32
 
-#define GPS_RX 0
-#define GPS_TX 4
-
 // Embedded Screen
 U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE, I2C_SCL_PIN, I2C_SDA_PIN);
 
@@ -78,10 +96,17 @@ U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE, I2C_SCL_PIN, I2
 
 #include <utils.h>
 #include <log.h>
-#include <lmic_helper.h>
 #include <probing.h>
+#include <lmic_helper.h>
 
-#define FILLMEIN (#dont edit this, edit the lines that use FILLMEIN)
+//
+// For normal use, we require that you edit the sketch to replace FILLMEIN
+// with values assigned by the TTN console. However, for regression tests,
+// we want to be able to compile these scripts. The regression tests define
+// COMPILE_REGRESSION_TEST, and in that case we define FILLMEIN to a non-
+// working but innocuous value.
+# warning "You must replace the values marked FILLMEIN with real values from the TTN control panel!"
+# define FILLMEIN (#dont edit this, edit the lines that use FILLMEIN)
 
 // This EUI must be in little-endian format, so least-significant-byte
 // first. When copying an EUI from ttnctl output, this means to reverse
@@ -104,9 +129,7 @@ void os_getDevEui (u1_t* buf) { memcpy_P(buf, DEVEUI, 8);}
 static const u1_t PROGMEM APPKEY[16] = LORAWAN_APPKEY;
 void os_getDevKey (u1_t* buf) {  memcpy_P(buf, APPKEY, 16);}
 
-// Good LORA doc: https://lora.readthedocs.io/en/latest/
-
-/* Airtime calculator : https://www.thethingsnetwork.org/airtime-calculator
+/*
 For 51 bytes in EU868 with 125kHz BW,
 - at SF7:  118ms    => 254 msg / day => 10 msg / hour
 - at SF8:  215.6ms  => 139 msg / day =>  5 msg / hour
@@ -114,16 +137,6 @@ For 51 bytes in EU868 with 125kHz BW,
 - at SF10: 698.4ms  =>  42 msg / day
 - at SF11: 1560.6ms =>  19 msg / day
 - at SF12: 2793.5ms =>  10 msg / day
-
-For 20 bytes in EU868 with 125kHz BW,
-- at SF7: 71.9ms    => 417 msg / day => 17 msg / hour
-- at SF8: 133.6ms   => 224 msg / day => 9 msg / hour
-- at SF12: 1810.4ms => 16 msg / day
-
-For 10 bytes in EU868 with 125kHz BW,
-- at SF7: 61.7ms    => 486 msg / day => 20 msg / hour
-- at SF8: 113.2ms   => 265 msg / day => 11 msg / hour
-- at SF12: 1482.8ms => 20 msg / day
 */
 
 // TTGO ESP32 Lora pin mapping
@@ -134,8 +147,10 @@ const lmic_pinmap lmic_pins = {
     .dio = {LORA_DIO0_PIN, LORA_DIO1_PIN, LORA_DIO2_PIN},
 };
 
-void deepSleep(unsigned int deepsleep_ms) {
-    displayStats(LMIC, true, deepsleep_ms);
+//static osjob_t sendjob;
+
+void deepSleep(u_int deepsleep_ms) {
+    displayStats(true);
 
     log(F("Entering deepsleep for "), false);
     log(deepsleep_ms, 10, false);
@@ -157,6 +172,8 @@ void deepSleep(unsigned int deepsleep_ms) {
     pinMode(LORA_DIO2_PIN, INPUT); 
     //delay(100);
     gpio_deep_sleep_hold_en();
+
+    sleepingTime = deepsleep_ms;
 
     //esp_sleep_enable_timer_wakeup(deepsleep_sec * 1000000);
     //esp_deep_sleep_start();
@@ -183,72 +200,59 @@ void setup() {
     //u8g2.clearDisplay();
 #endif
 
-    initProbing();
+    delay(2000);
+    // Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
+    // DBG_DEBUG("Wire began");
 
     // LMIC init
     os_init();
     DBG_DEBUG("LMIC inited");
 
-    if (RTC_LMIC.devaddr != 0 || RTC_LMIC.opmode & OP_JOINING) {
+    if (RTC_LMIC.netid != 0 || RTC_LMIC.opmode & OP_JOINING) {
         restoreLmic();
         DBG_DEBUG("LMIC restored");
     } else {
         // Reset the MAC state. Session and pending data transfers will be discarded.
         LMIC_reset();
+        //LMIC.netid = 0;
+        // Set data rate and transmit power for uplink
         DBG_DEBUG("LMIC reset");
     }
 
-    #ifdef SAVE_TO_EEPROM
-    initLorawanEepromStorage();
-    #endif //SAVE_TO_EEPROM
-
-    // Disable ADR for mobile device
-    //LMIC_setAdrMode(false);
+    //initLorawanEepromStorage();
 }
 
 void loop() {
     DBG_DEBUG("loop started");
-    displayStats(LMIC);
-    DBG_VERBOSE("stats displayed");
-    logLmicStatus(LMIC);
-    DBG_VERBOSE("LMIC status logged");
+    displayStats();
+
+    logLmicStatus();
 
     DBG_INFO("Next Job deadline in: %d ms with message length: %d.", osticks2ms(LMIC.osjob.deadline), LMIC.pendTxLen);
 
     if (LMIC.devaddr == 0 && !(LMIC.opmode & OP_JOINING)) {
-        DBG_DEBUG("No Dev addr, not Joining");
-        // Not JOINED nor JOINING yet.
-        #ifdef SAVE_TO_EEPROM
-        if (isSavedLoraWanSession()) {
+        DBG_DEBUG("No Network ID, not Joining");
+        // Not JOINED yet.
+        if (false && isSavedLoraWanSession()) {
             restoreLoraWanSession();
         } else {
             LMIC_startJoining();
         }
-        #else
-        LMIC_startJoining();
-        #endif //SAVE_TO_EEPROM
     } else {
-        DBG_DEBUG("Dev addr: %x", LMIC.devaddr);
+        DBG_DEBUG("Network ID: %d", LMIC.netid);
     }
 
-    // Clear previous transmission if not joining
+    // Clear previous transmission
     if (!(LMIC.opmode & OP_JOINING)) {
         LMIC_clrTxData();
     }
 
     bool probingDone = false;
-    bool sendMessageDone = false;
-    bool sendMessageFailed = false;
     int smallWorkTimeWindowMs = 1000;
     unsigned long nextSmallWorkCheckTimeMs = 0;
     unsigned long minimalDeepsleepTimeMs = 10000;
-    unsigned long probingTime = 0;
-    unsigned long probingOutdatedTimeMs = 20000; // Probed data are valid this amount of time.
     unsigned int extraStartingTime = 5000;
-    bool sleepingEnabled = true;
-    
-    // Max TTN payload size for SF10 and greater : 51 bytes.
-    CayenneLPP lpp(51);
+    bool sleepingEnabled = false;
 
     while (true) {
         os_runloop_once();
@@ -256,73 +260,50 @@ void loop() {
         if (millis() > nextSmallWorkCheckTimeMs) {
             if (isLmicNotDoingCriticalJob(smallWorkTimeWindowMs)) {
                 DBG_DEBUG("Small time window started");
-                displayStats(LMIC);
-                logLmicStatus(LMIC);
+                displayStats();
+                logLmicStatus();
+                DBG_DEBUG("LMIC status: %d", LMIC.opmode);
 
-                if (! probingDone && LMIC.devaddr != 0) {
+                if (! probingDone && LMIC.netid != 0) {
                     // Probing not done yet and LMIC session acquired
                     const uint maxProbingTime = (PROBE_MAXIMUM_PROBING_ITERATION + 1) * PROBE_INTERVAL_IN_MS;
                     if (isLmicNotDoingCriticalJob(maxProbingTime)) {
                         // Time window available to probe
                         DBG_DEBUG("Probing started");
-                        doProbe(lpp);
-                        probingTime = millis();
+                        doProbe();
                         DBG_DEBUG("Probing ended");
+                        //sendLppMessage(lpp, false);
+                        sendLoraWanMessage(lpp.getBuffer(), lpp.getSize(), false);
                         probingDone = true;
-                        
-                    } else {
-                        DBG_DEBUG("Not safe probe during %d ms.", maxProbingTime);
+                        DBG_DEBUG("Probing done");
                     }
                 }
 
-                if (probingDone && ! sendMessageDone && LMIC_queryTxReady()) {
-                    loraStats.probeCounter ++;
-                    displayStats(LMIC, true);
-                    bool msgSchedule = sendLppMessage(lpp, false);
-                    //bool msgSchedule = sendLoraWanMessage(lpp->getBuffer(), lpp->getSize(), false);
-                    if (msgSchedule) {
-                        sendMessageDone = true;
-                    } else {
-                        sendMessageFailed = true;
-                    }
-                }
 
-                if (probingDone && !sendMessageDone) {
-                    // Send message not done yet
-                    if (millis() < probingTime + probingOutdatedTimeMs) {
-                        // Let running the loop for a while if probed data are not oudated
-                        DBG_DEBUG("Failed to schedule tx. Will retry.");
-                        continue;
-                    }
-                }
+
 
                 long deepsleepTime = PROBING_PERIOD_IN_SEC * 1000 - millis();
                 if (deepsleepTime < 0) {
                     // Should we produce another probing soon ? What TODO ?
                     deepsleepTime = PROBING_PERIOD_IN_SEC * 1000;
                 }
-                long timeWindow = deepsleepTime + extraStartingTime;
-                if (! isLmicNotDoingCriticalJob(timeWindow)) {
+                if (! isLmicNotDoingCriticalJob(deepsleepTime + extraStartingTime)) {
                     // Attempt to sleep a shorter period to save battery
-                    DBG_DEBUG("Not safe to sleep for %d ms.", timeWindow);
-                    timeWindow = minimalDeepsleepTimeMs + extraStartingTime;
-                    if (isLmicNotDoingCriticalJob(timeWindow)) {
+                    if (isLmicNotDoingCriticalJob(minimalDeepsleepTimeMs + extraStartingTime)) {
                         // We can deepsleep for a minimal time
-                        DBG_DEBUG("Safe to sleep for %d ms.", timeWindow);
                         deepsleepTime = minimalDeepsleepTimeMs;
                     } else {
                         // We cannot deepsleep at all
-                        DBG_DEBUG("Not safe to sleep for %d ms.", timeWindow);
                         deepsleepTime = 0;
                     }
                 }
 
                 if (sleepingEnabled && deepsleepTime > 0) {
-                    logLmicStatus(LMIC);
+                    logLmicStatus();
 
-                    DBG_DEBUG("Next Job deadline in: %d ms with message length: %d.", osticks2ms(LMIC.osjob.deadline), LMIC.pendTxLen);
+                    DBG_INFO("Next Job deadline in: %d ms with message length: %d.", osticks2ms(LMIC.osjob.deadline), LMIC.pendTxLen);
 
-                    DBG_INFO("Will sleep for: %d ms.", deepsleepTime);
+                    DBG_DEBUG("Will sleep for: %d ms.", deepsleepTime);
                     // log(F("joining: "));
                     // logln(String(LMIC.opmode & OP_JOINING));
                     log(F("Sleep for "));

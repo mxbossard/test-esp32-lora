@@ -21,6 +21,7 @@ int sortDoubleAsc(const void *cmp1, const void *cmp2) {
  * Exclude NAN values.
  * return a NAN value if less than PROBE_MINIMUM_SIGNIFICANT_VALUES non NAN values in the array.
  */
+/*
 double medianOfArray(double array[], int significantCount = 1) {
     int arrayLength = sizeof(array) - 1;
     int arraySize = arrayLength * sizeof(array[0]);
@@ -46,20 +47,23 @@ double medianOfArray(double array[], int significantCount = 1) {
     //logln("Median value: " + String(medianValue) + " from " + String(valuesCount) + " values.", false);
     return medianValue;
 }
+*/
 
-
-Sampler::Sampler(int significantSampleCount, int maxSampleCount) {
+template<typename T>
+AbstractBaseSampler<T>::AbstractBaseSampler(int significantSampleCount, int maxSampleCount) {
     _significantSampleCount = significantSampleCount;
     _maxSampleCount = maxSampleCount;
-    _samples = (double *)malloc(maxSampleCount);
+    _samples = (T*) malloc(maxSampleCount*sizeof(T));
     reset();
 }
 
-Sampler::~Sampler() {
+template<typename T>
+AbstractBaseSampler<T>::~AbstractBaseSampler() {
     free(_samples);
 }
 
-void Sampler::reset(void) {
+template<typename T>
+void AbstractBaseSampler<T>::reset(void) {
     _sampleCount = 0;
     _cursor = 0;
     for (int k=0; k < _maxSampleCount; k++) {
@@ -68,7 +72,8 @@ void Sampler::reset(void) {
     _errorCount = 0;
 }
 
-void Sampler::addSample(double value){
+template<typename T>
+void AbstractBaseSampler<T>::addSample(T value){
     if (! isFull()) {
         _samples[_cursor] = value;
         _cursor ++;
@@ -80,34 +85,65 @@ void Sampler::addSample(double value){
     }
 }
 
-void Sampler::reportError(void) {
+template<typename T>
+void AbstractBaseSampler<T>::reportError(void) {
     _errorCount ++;
 }
 
-int Sampler::sampleCount(void) {
+template<typename T>
+int AbstractBaseSampler<T>::sampleCount(void) {
     return _cursor;
 }
 
-int Sampler::errorCount(void) {
+template<typename T>
+int AbstractBaseSampler<T>::errorCount(void) {
     return _errorCount;
 }
 
-bool Sampler::isSignificant(void){
+template<typename T>
+bool AbstractBaseSampler<T>::isSignificant(void){
     return _sampleCount >= _significantSampleCount;
 }
 
-bool Sampler::isFull(void){
+template<typename T>
+bool AbstractBaseSampler<T>::isFull(void){
     return _cursor >= _maxSampleCount;
 }
 
-double Sampler::median(void){
-    if (_sampleCount == 0) return NAN;
+DoubleSampler::DoubleSampler(int significantSampleCount, int maxSampleCount)
+    : AbstractBaseSampler<double>(significantSampleCount, maxSampleCount) {
 
-    return medianOfArray(_samples);
 }
 
-double Sampler::average(void){
-    if (_sampleCount == 0) return NAN;
+DoubleSampler::~DoubleSampler() {
+
+}
+
+double DoubleSampler::median(void){
+    // If too few significant values, return NAN.
+    if (!isSignificant()) {
+        return NAN;
+    }
+
+    int arrayLength = _maxSampleCount;
+    int arraySize = arrayLength * sizeof(_samples[0]);
+    double buffer[arrayLength];
+    memcpy(buffer, _samples, arraySize);
+    
+    // qsort - last parameter is a function pointer to the sort function
+    qsort(buffer, arrayLength, sizeof(buffer[0]), sortDoubleAsc);
+
+    unsigned int medianIndex = (_sampleCount + 1) / 2;
+    double medianValue = buffer[medianIndex];
+    //logln("Median value: " + String(medianValue) + " from " + String(valuesCount) + " values.", false);
+    return medianValue;
+}
+
+double DoubleSampler::average(void){
+    // If too few significant values, return NAN.
+    if (!isSignificant()) {
+        return NAN;
+    }
 
     double sampleSum = 0;
     for (int k=0; k < _maxSampleCount; k++) {
@@ -118,8 +154,11 @@ double Sampler::average(void){
     return sampleSum / _sampleCount;
 }
 
-double Sampler::min(void){
-    if (_sampleCount == 0) return NAN;
+double DoubleSampler::min(void){
+    // If too few significant values, return NAN.
+    if (!isSignificant()) {
+        return NAN;
+    }
 
     double sampleMin = NAN;
     for (int k=0; k < _maxSampleCount; k++) {
@@ -130,8 +169,11 @@ double Sampler::min(void){
     return sampleMin;
 }
 
-double Sampler::max(void){
-    if (_sampleCount == 0) return NAN;
+double DoubleSampler::max(void){
+    // If too few significant values, return NAN.
+    if (!isSignificant()) {
+        return NAN;
+    }
 
     double sampleMax = NAN;
     for (int k=0; k < _maxSampleCount; k++) {

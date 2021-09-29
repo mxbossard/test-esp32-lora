@@ -96,9 +96,9 @@ bool probeGpsOnce(struct GpsData_t *gpsData) {
     return false;
 }
 
-bool probeGps(struct GpsData_t *gpsData, int maxAttempts) {
+bool probeGps(struct GpsData_t *gpsData, int maxAttempts = 10) {
     for (int i = 0; i < maxAttempts ; i++) {
-        Serial.println("Probing attempt #" + String(i));
+        Serial.println("Probing GPS attempt #" + String(i));
         bool probeSuccess = probeGpsOnce(gpsData);
         if (probeSuccess) return true;
         delay(1000);

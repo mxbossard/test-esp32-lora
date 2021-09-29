@@ -7,7 +7,6 @@
 #include <utils.h>
 #include <Preferences.h>
 #include <ArduinoDebug.h>
-#include <CayenneLPP.h>
 
 #define LORAWAN_SESSION_EEPROM_NS "lorawan-session"
 
@@ -18,7 +17,6 @@ struct LoraStats_t {
 	//uint32_t dataSentCounter;
     uint32_t joinAttemptCounter;
     uint32_t joinedCounter;
-    uint32_t probeCounter;
     uint32_t txCounter;
     uint32_t txAckCounter;
     uint32_t rxCounter;
@@ -27,21 +25,27 @@ struct LoraStats_t {
 RTC_DATA_ATTR LoraStats_t loraStats;
 
 bool isLmicNotDoingCriticalJob(unsigned int timeInMs) {
-    bool isItSafe = !(LMIC.opmode & (OP_POLL | OP_TXDATA | OP_TXRXPEND)) 
+    return LMIC_queryTxReady()
         && !os_queryTimeCriticalJobs(ms2osticksRound(timeInMs));
-    return isItSafe;
 }
 
 static const unsigned long SCREEN_REFRESH_INTERVAL = 1000; // ms
 static const unsigned long SCREEN_REFRESH_TIME = 200; // ms
 static long lastScreenRefreshTime = millis() - SCREEN_REFRESH_INTERVAL;
-void displayStats(struct lmic_t lmic, bool force = false, unsigned int sleepingTime = 0) {
-    DBG_VERBOSE("displayStats() began");
+void displayStats(bool force = false, unsigned int sleepingTime = 0) {
+    if (!isLmicNotDoingCriticalJob(SCREEN_REFRESH_TIME)) {
+        // Do not display on critical period
+        return;
+    }
 
     if (! force && millis() <= lastScreenRefreshTime + SCREEN_REFRESH_INTERVAL) return;
     
+    DBG_DEBUG("displayStats() began");
+
+    //DBG_INFO("LMIC dr: %d ; txPow: %d ; txChan: %d", LMIC.datarate, LMIC.txpow, LMIC.txChnl);
+
     String currentDatarate;
-    switch(lmic.datarate) {
+    switch(LMIC.datarate) {
         case EU868_DR_SF12: currentDatarate = "SF12"; break;
         case EU868_DR_SF11: currentDatarate = "SF11"; break;
         case EU868_DR_SF10: currentDatarate = "SF10"; break;
@@ -51,16 +55,14 @@ void displayStats(struct lmic_t lmic, bool force = false, unsigned int sleepingT
         case EU868_DR_SF7B: currentDatarate = "SF7B"; break;
         case EU868_DR_FSK: currentDatarate = "FSK"; break;
         case EU868_DR_NONE: currentDatarate = "no"; break;
-        default: currentDatarate = "-"; break;
+        default: currentDatarate = LMIC.datarate; break;
     }
 
-    String currentTxPower = String(lmic.adrTxPow);
-    String currentTxChannel = String(lmic.txChnl);
-    String probeCounter = String(loraStats.probeCounter);
+    String currentTxPower = String(LMIC.adrTxPow);
+    String currentTxChannel = String(LMIC.txChnl);
 
     String joiningAttempt = String(loraStats.joinAttemptCounter);
     String joined = String(loraStats.joinedCounter);
-    String adrEnabled = String(lmic.adrEnabled);
 
     String sendingAttempt = String(loraStats.dataSendingAttemptCounter);
     String txAttempt = String(loraStats.txCounter);
@@ -68,48 +70,89 @@ void displayStats(struct lmic_t lmic, bool force = false, unsigned int sleepingT
 
     clearJournal();
     journalMessage("DR: " + currentDatarate + " pow: " + currentTxPower + "dbm");
-    journalMessage("Probe: " + probeCounter + " chan: " + currentTxChannel);
-    journalMessage("joined: " + joined + " / " + joiningAttempt + " adr: " + adrEnabled);
+    journalMessage("chan: " + currentTxChannel);
+    journalMessage("joined: " + joined + " / " + joiningAttempt);
     journalMessage("tx: " + txAttempt + " / " + sendingAttempt + " ack: " + txAck);
     if (sleepingTime > 0) {
         journalMessage("sleeping: " + String(sleepingTime/1000) + " sec");
     }
     displayJournal();
     lastScreenRefreshTime = millis();
-    DBG_VERBOSE("displayStats() ended");
+    DBG_DEBUG("displayStats() ended");
 }
 
-void logLmicStatus(struct lmic_t lmic) {
-    DBG_VERBOSE("logLmicStatus() began");
+void initLorawanEepromStorage() {
+    preferences.begin(LORAWAN_SESSION_EEPROM_NS, false);
+}
 
-    String opmode = F("");
-    if (lmic.opmode & OP_JOINING) opmode += F(" JOINING");
-    if (lmic.opmode & OP_LINKDEAD) opmode += F(" LINKDEAD");
-    if (lmic.opmode & OP_NEXTCHNL) opmode += F(" NEXTCHNL");
-    if (lmic.opmode & OP_PINGABLE) opmode += F(" PINGABLE");
-    if (lmic.opmode & OP_PINGINI) opmode += F(" PINGINI");
-    if (lmic.opmode & OP_POLL) opmode += F(" POLL");
-    if (lmic.opmode & OP_REJOIN) opmode += F(" REJOIN");
-    if (lmic.opmode & OP_RNDTX) opmode += F(" RNDTX");
-    if (lmic.opmode & OP_SCAN) opmode += F(" SCAN");
-    if (lmic.opmode & OP_SHUTDOWN) opmode += F(" SHUTDOWN");
-    if (lmic.opmode & OP_TESTMODE) opmode += F(" TESTMODE");
-    if (lmic.opmode & OP_TRACK) opmode += F(" TRACK");
-    if (lmic.opmode & OP_TXDATA) opmode += F(" TXDATA");
-    if (lmic.opmode & OP_TXRXPEND) opmode += F(" TXRXPEND");
-    if (lmic.opmode & OP_UNJOIN) opmode += F(" UNJOIN");
-    if (lmic.opmode == OP_NONE) opmode = F(" NONE");
+void saveLoraWanSession() {
+    DBG_DEBUG("saveLoraWanSession() began");
+    u1_t appeui[8];
+    u1_t deveui[8];
+    u1_t appkey[16];
+    os_getArtEui(appeui);
+    os_getDevEui(deveui);
+    os_getDevKey(appkey);
+    preferences.putBytes("APPEUI", appeui, sizeof(appeui));
+    preferences.putBytes("DEVEUI", deveui, sizeof(deveui));
+    preferences.putBytes("APPKEY", appkey, sizeof(appkey));
 
-    // FIXME next line is buggy. It display: [I] LMIC opmode: @��?␏
-    //DBG_INFO("LMIC opmode: %s", opmode);
-    log("LMIC opmode: ");
-    logln(opmode);
-    
-    DBG_INFO("LMIC netid: %u ; devaddr: %u", lmic.netid, lmic.devaddr);
+    u4_t netid = 0;
+    devaddr_t devaddr = 0;
+    u1_t nwkKey[16];
+    u1_t artKey[16];
+    LMIC_getSessionKeys(&netid, &devaddr, nwkKey, artKey);
 
-    DBG_INFO("LMIC txend: %d ; rxtime: %d ; lbt_ticks: %d ; globalDutyAvail: %d", lmic.txend, lmic.rxtime, lmic.lbt_ticks, lmic.globalDutyAvail);
-    
-    DBG_VERBOSE("logLmicStatus() ended");
+    preferences.putBytes("NWKSKEY", nwkKey, sizeof(nwkKey));
+    preferences.putBytes("APPSKEY", artKey, sizeof(artKey));
+    preferences.putInt("DEVADDR", devaddr);
+    preferences.putInt("NETID", netid);
+    DBG_DEBUG("saveLoraWanSession() ended");
+}
+
+bool isSavedLoraWanSession() {
+    DBG_DEBUG("isSavedLoraWanSession() began");
+    u1_t appeui[8];
+    u1_t deveui[8];
+    u1_t appkey[16];
+    os_getArtEui(appeui);
+    os_getDevEui(deveui);
+    os_getDevKey(appkey);
+
+    u1_t savedAppeui[8];
+    u1_t savedDeveui[8];
+    u1_t savedAppkey[16];
+    preferences.getBytes("APPEUI", savedAppeui, sizeof(savedAppeui));
+    preferences.getBytes("DEVEUI", savedDeveui, sizeof(savedDeveui));
+    preferences.getBytes("APPKEY", savedAppkey, sizeof(savedAppkey));
+    u4_t savedNetid = preferences.getInt("NETID", 0);
+
+    DBG_INFO("Saved netid: %d", savedNetid);
+    //logln(savedNetid, DEC);
+
+    return savedNetid != 0 
+        && memcmp(appeui, savedAppeui, sizeof(appeui)) == 0
+        && memcmp(deveui, savedDeveui, sizeof(appeui)) == 0
+        && memcmp(appkey, savedAppkey, sizeof(appeui)) == 0;
+}
+
+void restoreLoraWanSession() {
+    DBG_DEBUG("restoreLoraWanSession() began");
+    u1_t nwkskey[16];
+    u1_t appskey[16];
+    preferences.getBytes("NWKSKEY", nwkskey, sizeof(nwkskey));
+    preferences.getBytes("APPSKEY", appskey, sizeof(appskey));
+    devaddr_t devaddr = preferences.getInt("DEVADDR");
+    u4_t netid = preferences.getInt("NETID");
+
+    LMIC_setSession (netid, devaddr, nwkskey, appskey);
+    LMIC_setLinkCheckMode(1);
+    // TTN uses SF9 for its RX2 window.
+    LMIC.dn2Dr = DR_SF9;
+    // Set data rate and transmit power for uplink
+    LMIC_setDrTxpow(DR_SF7,14);
+
+    DBG_DEBUG("restoreLoraWanSession() ended");
 }
 
 void logLoraWanSessionInfos() {
@@ -138,42 +181,67 @@ void logLoraWanSessionInfos() {
     logln("", false);
 }
 
-bool sendLoraWanMessage(xref2u1_t data, u1_t dlen, bool confirmed = false) {
-    bool scheduledMessage = false;
+void sendLoraWanMessage(xref2u1_t data, u1_t dlen, bool confirmed = false) {
+    DBG_DEBUG("sendLoraWanMessage() began");
+    char str[dlen];
+    array_to_string(data, dlen, str);
+    DBG_DEBUG("Sending LoraWan message: %s", str);
+
     // Start job
     // Check if there is not a current TX/RX job running
     if (LMIC.opmode & OP_TXRXPEND) {
         logln(F("OP_TXRXPEND, not sending"));
     } else {
-        DBG_VERBOSE("sendLoraWanMessage() began");
-
         // Prepare upstream data transmission at the next possible time.
         lmic_tx_error_t result = LMIC_setTxData2(1, data, dlen, confirmed);
-        loraStats.dataSendingAttemptCounter ++;
         if (result == LMIC_ERROR_SUCCESS) {
             u4_t seqnoUp = LMIC.seqnoUp;
-            scheduledMessage = true;
-            DBG_VERBOSE("Packet queued with next seq up: %d", seqnoUp);
+            log(F("Packet queued with next seq up: "), false);
+            logln(seqnoUp, 10, false);
         } else {
-            DBG_VERBOSE("Unable to queue message ! Error is: %d", result);
+            log(F("Unable to queue message ! Error is: "));
+            logln(result);
         }
     }
-    
-    DBG_VERBOSE("sendLoraWanMessage() ended");
-    return scheduledMessage;
+    loraStats.dataSendingAttemptCounter ++;
+    DBG_DEBUG("sendLoraWanMessage() ended");
+}
+
+void logLmicStatus() {
+    log("LMIC status:");
+    if (LMIC.opmode & OP_JOINING) log(" JOINING");
+    if (LMIC.opmode & OP_LINKDEAD) log(" LINKDEAD");
+    if (LMIC.opmode & OP_NEXTCHNL) log(" NEXTCHNL");
+    if (LMIC.opmode & OP_NONE) log(" NONE");
+    if (LMIC.opmode & OP_PINGABLE) log(" PINGABLE");
+    if (LMIC.opmode & OP_PINGINI) log(" PINGINI");
+    if (LMIC.opmode & OP_POLL) log(" POLL");
+    if (LMIC.opmode & OP_REJOIN) log(" REJOIN");
+    if (LMIC.opmode & OP_RNDTX) log(" RNDTX");
+    if (LMIC.opmode & OP_SCAN) log(" SCAN");
+    if (LMIC.opmode & OP_SHUTDOWN) log(" SHUTDOWN");
+    if (LMIC.opmode & OP_TESTMODE) log(" TESTMODE");
+    if (LMIC.opmode & OP_TRACK) log(" TRACK");
+    if (LMIC.opmode & OP_TXDATA) log(" TXDATA");
+    if (LMIC.opmode & OP_TXRXPEND) log(" TXRXPEND");
+    if (LMIC.opmode & OP_UNJOIN) log(" UNJOIN");
+    log(" (");
+    log(LMIC.opmode);
+    logln(")");
+
+    log("LMIC txend: ");
+    log(LMIC.txend);
+    log(" ; rxtime: ");
+    log(LMIC.rxtime);
+    log(" ; lbt_ticks: ");
+    log(LMIC.lbt_ticks);
+    log(" ; globalDutyAvail: ");
+    log(LMIC.globalDutyAvail);
+    logln("");
 }
 
 // Saves the LMIC structure during DeepSleep
 RTC_DATA_ATTR lmic_t RTC_LMIC;
-
-void updateJobForDeepsleep(osjob_t *job, long deepsleepTicks) {
-    if (job != NULL) {
-        DBG_DEBUG("Updating a job for deepsleep. Previous deadline: %d", job->deadline);
-        job->deadline -= deepsleepTicks;
-        DBG_DEBUG("New job deadline: %d", job->deadline);
-        updateJobForDeepsleep(job->next, deepsleepTicks);
-    }
-}
 
 void storeLmic(int deepsleep_ms) {
     logln(F("Storing LMIC into RTC"), false);
@@ -189,14 +257,12 @@ void storeLmic(int deepsleep_ms) {
 
     unsigned long now = millis();
 
+
     // Update first job deadline for deepsleep
     // FIXME: update all job deadlines
     long deepsleepTicks = (deepsleep_ms / 1000.0) * OSTICKS_PER_SEC;
-    // RTC_LMIC.osjob.deadline -= deepsleepTicks;
-    // RTC_LMIC.osjob.next = NULL;
-
-    // Update all jobs deadline for deepsleep
-    updateJobForDeepsleep(&RTC_LMIC.osjob, deepsleepTicks);
+    RTC_LMIC.osjob.deadline -= deepsleepTicks;
+    RTC_LMIC.osjob.next = NULL;
     
     // Move timings in passed for next deepsleep wakening
     long tickShift = ((now / 1000.0 + deepsleep_ms / 1000.0) * OSTICKS_PER_SEC);
@@ -234,6 +300,7 @@ void restoreLmic() {
         logln(String(LMIC.osjob.deadline));
     }
 }
+
 
 void onEvent (ev_t ev) {
     log(millis(), 10, false);
@@ -335,83 +402,5 @@ void onEvent (ev_t ev) {
             break;
     }
 }
-
-
-#ifdef SAVE_TO_EEPROM
-void initLorawanEepromStorage() {
-    preferences.begin(LORAWAN_SESSION_EEPROM_NS, false);
-}
-
-void saveLoraWanSession() {
-    DBG_VERBOSE("saveLoraWanSession() began");
-    u1_t appeui[8];
-    u1_t deveui[8];
-    u1_t appkey[16];
-    os_getArtEui(appeui);
-    os_getDevEui(deveui);
-    os_getDevKey(appkey);
-    preferences.putBytes("APPEUI", appeui, sizeof(appeui));
-    preferences.putBytes("DEVEUI", deveui, sizeof(deveui));
-    preferences.putBytes("APPKEY", appkey, sizeof(appkey));
-
-    u4_t netid = 0;
-    devaddr_t devaddr = 0;
-    u1_t nwkKey[16];
-    u1_t artKey[16];
-    LMIC_getSessionKeys(&netid, &devaddr, nwkKey, artKey);
-
-    preferences.putBytes("NWKSKEY", nwkKey, sizeof(nwkKey));
-    preferences.putBytes("APPSKEY", artKey, sizeof(artKey));
-    preferences.putInt("DEVADDR", devaddr);
-    preferences.putInt("NETID", netid);
-    DBG_VERBOSE("saveLoraWanSession() ended");
-}
-
-bool isSavedLoraWanSession() {
-    DBG_VERBOSE("isSavedLoraWanSession() began");
-    u1_t appeui[8];
-    u1_t deveui[8];
-    u1_t appkey[16];
-    os_getArtEui(appeui);
-    os_getDevEui(deveui);
-    os_getDevKey(appkey);
-
-    u1_t savedAppeui[8];
-    u1_t savedDeveui[8];
-    u1_t savedAppkey[16];
-    preferences.getBytes("APPEUI", savedAppeui, sizeof(savedAppeui));
-    preferences.getBytes("DEVEUI", savedDeveui, sizeof(savedDeveui));
-    preferences.getBytes("APPKEY", savedAppkey, sizeof(savedAppkey));
-    u4_t savedNetid = preferences.getInt("NETID", 0);
-
-    DBG_INFO("Saved netid: %d", savedNetid);
-    //logln(savedNetid, DEC);
-
-    return savedNetid != 0 
-        && memcmp(appeui, savedAppeui, sizeof(appeui)) == 0
-        && memcmp(deveui, savedDeveui, sizeof(appeui)) == 0
-        && memcmp(appkey, savedAppkey, sizeof(appeui)) == 0;
-}
-
-void restoreLoraWanSession() {
-    DBG_VERBOSE("restoreLoraWanSession() began");
-    u1_t nwkskey[16];
-    u1_t appskey[16];
-    preferences.getBytes("NWKSKEY", nwkskey, sizeof(nwkskey));
-    preferences.getBytes("APPSKEY", appskey, sizeof(appskey));
-    devaddr_t devaddr = preferences.getInt("DEVADDR");
-    u4_t netid = preferences.getInt("NETID");
-
-    LMIC_setSession (netid, devaddr, nwkskey, appskey);
-
-    //LMIC_setLinkCheckMode(1);
-    // TTN uses SF9 for its RX2 window.
-    //LMIC.dn2Dr = DR_SF9;
-    // Set data rate and transmit power for uplink
-    //LMIC_setDrTxpow(DR_SF7,14);
-
-    DBG_VERBOSE("restoreLoraWanSession() ended");
-}
-#endif //SAVE_TO_EEPROM
 
 #endif //lmic_helper_h
